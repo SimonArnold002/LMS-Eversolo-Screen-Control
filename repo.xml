@@ -6,7 +6,7 @@
     <plugin name="EversoloScreenControl" version="1.0.0" minTarget="8.0.0" maxTarget="*">
       <title lang="EN">Eversolo Screen Control</title>
       <desc lang="EN">Turns on and keeps display on whilst playing and turns off display when no music playing after 30sec</desc>
-      <url>https://github.com/SimonArnold002/LMS-Eversolo-Screen-Control/blob/main/EversoloScreenControl.zip</url>
+      <url>https://simonarnold002.github.io/LMS-Eversolo-Screen-Control/EversoloScreenControl.zip</url>
       <creator>CrystalGipsy</creator>
       <email></email>
       <sha>bfd534df82619f35ca69525b99ae6f3c0d2f872b</sha>
