@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<extension>
+    <name>PLUGIN_EVERSOLO_SCREEN_CONTROL</name>
+    <module>Plugins::EversoloScreenControl::Plugin</module>
+    <version>1.0.0</version>
+    <description>PLUGIN_EVERSOLO_SCREEN_CONTROL_DESC</description>
+    <creator>CrystalGipsy</creator>
+    <email></email>
+    <icon>plugins/EversoloScreenControl/html/images/icon.png</icon>
+    <homepageURL>https://github.com/youruser/EversoloScreenControl</homepageURL>
+    <defaultState>enabled</defaultState>
+    <type>2</type>
+    <!-- type=2 means extension -->
+    <targetApplication>
+        <id>SlimServer</id>
+        <minVersion>8.0</minVersion>
+        <maxVersion>9.*</maxVersion>
+    </targetApplication>
+</extension>

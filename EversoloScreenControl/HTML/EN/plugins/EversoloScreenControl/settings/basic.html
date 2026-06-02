@@ -1,0 +1,61 @@
+[% PROCESS settings/header.html %]
+
+<div class="prefBlock">
+
+    <div class="prefDesc">
+        <h2>[% "PLUGIN_EVERSOLO_SCREEN_CONTROL" | string %]</h2>
+        <p>[% "PLUGIN_EVERSOLO_SCREEN_CONTROL_DESC" | string %]</p>
+    </div>
+
+    <table class="prefTable" border="0" cellspacing="0" cellpadding="0">
+
+        <!-- Enable for this player -->
+        <tr>
+            <td class="prefHead">[% "PLUGIN_EVERSOLO_ENABLED" | string %]</td>
+            <td class="prefBody">
+                <input type="hidden" name="enabled" value="0" />
+                <input type="checkbox" name="enabled" value="1"
+                    [% IF prefs.enabled %]checked="checked"[% END %] />
+                <span class="prefDesc">[% "PLUGIN_EVERSOLO_ENABLED_DESC" | string %]</span>
+            </td>
+        </tr>
+
+        <!-- Eversolo IP Address -->
+        <tr>
+            <td class="prefHead">[% "PLUGIN_EVERSOLO_IP" | string %]</td>
+            <td class="prefBody">
+                <input type="text" name="eversolo_ip" value="[% prefs.eversolo_ip | html %]"
+                    size="20" placeholder="[% playerIP | html %]" />
+                <span class="prefDesc">[% "PLUGIN_EVERSOLO_IP_DESC" | string %]
+                    [% IF playerIP %]
+                        <br />[% "PLUGIN_EVERSOLO_IP_DETECTED" | string %] <b>[% playerIP | html %]</b>
+                    [% END %]
+                </span>
+            </td>
+        </tr>
+
+        <!-- Eversolo Port -->
+        <tr>
+            <td class="prefHead">[% "PLUGIN_EVERSOLO_PORT" | string %]</td>
+            <td class="prefBody">
+                <input type="text" name="eversolo_port" value="[% prefs.eversolo_port | html %]"
+                    size="6" placeholder="9529" />
+                <span class="prefDesc">[% "PLUGIN_EVERSOLO_PORT_DESC" | string %]</span>
+            </td>
+        </tr>
+
+        <!-- Screen Off Delay -->
+        <tr>
+            <td class="prefHead">[% "PLUGIN_EVERSOLO_DELAY" | string %]</td>
+            <td class="prefBody">
+                <input type="text" name="screen_off_delay" value="[% prefs.screen_off_delay | html %]"
+                    size="6" placeholder="30" />
+                <span class="prefDesc">[% "PLUGIN_EVERSOLO_DELAY_DESC" | string %]</span>
+            </td>
+        </tr>
+
+    </table>
+
+</div>
+
+[% PROCESS settings/footer.html %]

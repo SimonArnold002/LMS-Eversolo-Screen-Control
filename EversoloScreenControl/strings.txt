@@ -1,0 +1,32 @@
+PLUGIN_EVERSOLO_SCREEN_CONTROL
+	EN	Eversolo Screen Control
+
+PLUGIN_EVERSOLO_SCREEN_CONTROL_DESC
+	EN	Controls the Eversolo DMP-A8 screen based on playback state for this player. When enabled, the screen turns ON when music starts playing and turns OFF after a configurable delay when playback pauses or stops. Configure the settings below for each player individually.
+
+PLUGIN_EVERSOLO_ENABLED
+	EN	Enable Eversolo Screen Control
+
+PLUGIN_EVERSOLO_ENABLED_DESC
+	EN	Tick to activate screen control for this player. Leave unticked for players that are not connected to an Eversolo.
+
+PLUGIN_EVERSOLO_IP
+	EN	Eversolo IP Address
+
+PLUGIN_EVERSOLO_IP_DESC
+	EN	The IP address of the Eversolo. Auto-populated from this player's IP address (since the Eversolo and its Squeezelite player share the same IP). Override only if the Eversolo is on a different address.
+
+PLUGIN_EVERSOLO_IP_DETECTED
+	EN	Player IP detected:
+
+PLUGIN_EVERSOLO_PORT
+	EN	Eversolo API Port
+
+PLUGIN_EVERSOLO_PORT_DESC
+	EN	HTTP control port (default: 9529). Only change if your device uses a non-standard port.
+
+PLUGIN_EVERSOLO_DELAY
+	EN	Screen Off Delay (seconds)
+
+PLUGIN_EVERSOLO_DELAY_DESC
+	EN	Seconds to wait after pause/stop before turning the screen off (default: 30, range: 0–600).
