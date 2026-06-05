@@ -20,7 +20,7 @@ use Slim::Utils::Prefs;
 use Slim::Utils::Timers;
 use Slim::Networking::SimpleAsyncHTTP;
 
-use constant PLUGIN_VERSION => '1.0.0';
+use constant PLUGIN_VERSION => '1.0.1';
 
 my $log = Slim::Utils::Log->addLogCategory({
     'category'     => 'plugin.eversoloscreencontrol',
@@ -33,6 +33,7 @@ my $prefs = preferences('plugin.eversoloscreencontrol');
 
 # Per-player defaults (applied the first time a player is seen)
 $prefs->setPlayerDefault('enabled',          0);
+$prefs->setPlayerDefault('auto_detect_ip',   1);
 $prefs->setPlayerDefault('eversolo_ip',      '');
 $prefs->setPlayerDefault('eversolo_port',    9529);
 $prefs->setPlayerDefault('screen_off_delay', 30);
@@ -85,6 +86,23 @@ sub shutdownPlugin {
 }
 
 # ---------------------------------------------------------------------------
+#  Resolve the Eversolo IP for a given player.
+#  If auto_detect_ip is on, use the player's live IP (from $client->ip()).
+#  Otherwise fall back to the manually stored IP.
+# ---------------------------------------------------------------------------
+sub _resolveIP {
+    my $client = shift;
+
+    if ($prefs->client($client)->get('auto_detect_ip')) {
+        my $ip = $client->ip() || '';
+        $ip =~ s/:.*$//;   # strip port if present
+        return $ip;
+    }
+
+    return $prefs->client($client)->get('eversolo_ip') || '';
+}
+
+# ---------------------------------------------------------------------------
 #  Event callback — fires for every player, we filter per-player prefs here
 # ---------------------------------------------------------------------------
 sub _playbackCallback {
@@ -95,7 +113,7 @@ sub _playbackCallback {
     # ---- Per-player gate: is Eversolo control enabled for THIS player? ----
     return unless $prefs->client($client)->get('enabled');
 
-    my $eversolo_ip = $prefs->client($client)->get('eversolo_ip');
+    my $eversolo_ip = _resolveIP($client);
     return unless $eversolo_ip && $eversolo_ip ne '';
 
     # Determine current playback mode
@@ -221,8 +239,8 @@ sub _turnScreenOff {
 sub _sendEversoloCommand {
     my ($client, $key) = @_;
 
-    my $ip   = $prefs->client($client)->get('eversolo_ip')   || return;
-    my $port = $prefs->client($client)->get('eversolo_port')  || 9529;
+    my $ip   = _resolveIP($client)                                || return;
+    my $port = $prefs->client($client)->get('eversolo_port')      || 9529;
 
     my $url = "http://${ip}:${port}/ZidooControlCenter/RemoteControl/sendkey?key=${key}";
 

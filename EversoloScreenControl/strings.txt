@@ -10,14 +10,20 @@ PLUGIN_EVERSOLO_ENABLED
 PLUGIN_EVERSOLO_ENABLED_DESC
 	EN	Tick to activate screen control for this player. Leave unticked for players that are not connected to an Eversolo.
 
-PLUGIN_EVERSOLO_IP
-	EN	Eversolo IP Address
+PLUGIN_EVERSOLO_AUTO_IP
+	EN	Auto-detect Eversolo IP
 
-PLUGIN_EVERSOLO_IP_DESC
-	EN	The IP address of the Eversolo. Auto-populated from this player's IP address (since the Eversolo and its Squeezelite player share the same IP). Override only if the Eversolo is on a different address.
+PLUGIN_EVERSOLO_AUTO_IP_DESC
+	EN	When ticked, the plugin uses this player's live IP address to reach the Eversolo (recommended). This means the plugin automatically follows IP changes from DHCP. Untick only if the Eversolo is at a different address from the player.
 
 PLUGIN_EVERSOLO_IP_DETECTED
-	EN	Player IP detected:
+	EN	Current player IP:
+
+PLUGIN_EVERSOLO_IP
+	EN	Manual Eversolo IP Address
+
+PLUGIN_EVERSOLO_IP_DESC
+	EN	Only used when auto-detect is off. Enter the Eversolo's IP address manually.
 
 PLUGIN_EVERSOLO_PORT
 	EN	Eversolo API Port

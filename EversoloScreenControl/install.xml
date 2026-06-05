@@ -2,7 +2,7 @@
 <extension>
     <name>PLUGIN_EVERSOLO_SCREEN_CONTROL</name>
     <module>Plugins::EversoloScreenControl::Plugin</module>
-    <version>1.0.0</version>
+    <version>1.0.1</version>
     <description>PLUGIN_EVERSOLO_SCREEN_CONTROL_DESC</description>
     <creator>CrystalGipsy</creator>
     <email></email>

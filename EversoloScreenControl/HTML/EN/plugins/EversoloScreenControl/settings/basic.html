@@ -20,17 +20,27 @@
             </td>
         </tr>
 
-        <!-- Eversolo IP Address -->
+        <!-- Auto-detect IP -->
+        <tr>
+            <td class="prefHead">[% "PLUGIN_EVERSOLO_AUTO_IP" | string %]</td>
+            <td class="prefBody">
+                <input type="hidden" name="auto_detect_ip" value="0" />
+                <input type="checkbox" name="auto_detect_ip" value="1"
+                    [% IF prefs.auto_detect_ip %]checked="checked"[% END %] />
+                <span class="prefDesc">[% "PLUGIN_EVERSOLO_AUTO_IP_DESC" | string %]</span>
+                [% IF playerIP %]
+                    <br />[% "PLUGIN_EVERSOLO_IP_DETECTED" | string %] <b>[% playerIP | html %]</b>
+                [% END %]
+            </td>
+        </tr>
+
+        <!-- Manual Eversolo IP Address -->
         <tr>
             <td class="prefHead">[% "PLUGIN_EVERSOLO_IP" | string %]</td>
             <td class="prefBody">
                 <input type="text" name="eversolo_ip" value="[% prefs.eversolo_ip | html %]"
                     size="20" placeholder="[% playerIP | html %]" />
-                <span class="prefDesc">[% "PLUGIN_EVERSOLO_IP_DESC" | string %]
-                    [% IF playerIP %]
-                        <br />[% "PLUGIN_EVERSOLO_IP_DETECTED" | string %] <b>[% playerIP | html %]</b>
-                    [% END %]
-                </span>
+                <span class="prefDesc">[% "PLUGIN_EVERSOLO_IP_DESC" | string %]</span>
             </td>
         </tr>
 
