@@ -74,15 +74,10 @@ sub handler {
         $params->{'screen_off_delay'} = int($delay);
     }
 
-    # Pass current per-player values to the template
+    # Pass the live player IP so the template can display it.  The per-player
+    # pref values themselves are populated into $params->{prefs} by
+    # SUPER::handler (after it saves), so we don't set them here.
     if ($client) {
-        $params->{'prefs'}->{'enabled'}          = $prefs->client($client)->get('enabled');
-        $params->{'prefs'}->{'auto_detect_ip'}   = $prefs->client($client)->get('auto_detect_ip');
-        $params->{'prefs'}->{'eversolo_ip'}      = $prefs->client($client)->get('eversolo_ip') || '';
-        $params->{'prefs'}->{'eversolo_port'}    = $prefs->client($client)->get('eversolo_port');
-        $params->{'prefs'}->{'screen_off_delay'} = $prefs->client($client)->get('screen_off_delay');
-
-        # Pass the live player IP so the template can display it
         $params->{'playerIP'} = $playerIP;
     }
 

@@ -16,7 +16,7 @@ The plugin is **per-player**, not global. It appears in the **Player Settings**
 menu (alongside DSD Player, etc.) and is enabled/disabled independently for each
 LMS player. Players not attached to an Eversolo simply leave it off and are unaffected.
 
-**Current version: 1.0.1**
+**Current version: 1.0.2**
 
 ## How it works
 
@@ -73,7 +73,7 @@ global would break multi-device setups.
 ```
 EversoloScreenControl/
 ├── Plugin.pm            # Core logic: event subscriptions, ON/OFF, _resolveIP(), timers
-├── Settings.pm          # Per-player settings page (needsClient => 1)
+├── PlayerSettings.pm    # Per-player settings page (needsClient => 1)
 ├── install.xml          # LMS plugin metadata + <version> (creator: CrystalGipsy)
 ├── strings.txt          # Localised UI strings (PLUGIN_EVERSOLO_*)
 ├── CHANGELOG.md         # Semantic-versioned history

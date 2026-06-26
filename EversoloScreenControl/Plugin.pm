@@ -20,13 +20,12 @@ use Slim::Utils::Prefs;
 use Slim::Utils::Timers;
 use Slim::Networking::SimpleAsyncHTTP;
 
-use constant PLUGIN_VERSION => '1.0.1';
+use constant PLUGIN_VERSION => '1.0.2';
 
 my $log = Slim::Utils::Log->addLogCategory({
     'category'     => 'plugin.eversoloscreencontrol',
     'defaultLevel' => 'INFO',
     'description'  => 'PLUGIN_EVERSOLO_SCREEN_CONTROL',
-    'logGroups'    => 'SCANNER',
 });
 
 my $prefs = preferences('plugin.eversoloscreencontrol');
@@ -60,10 +59,13 @@ sub initPlugin {
         Plugins::EversoloScreenControl::PlayerSettings->new;
     }
 
-    # Subscribe to playback events (all players — we filter inside the callback)
+    # Subscribe to playback STATE changes only (all players — we filter
+    # per-player inside the callback).  The second filter array restricts us
+    # to the playlist sub-commands that change play state, so read-only
+    # queries like 'playlist tracks' / 'playlist name' never wake the callback.
     Slim::Control::Request::subscribe(
         \&_playbackCallback,
-        [['playlist', 'play', 'pause', 'stop', 'power', 'mode']],
+        [['playlist'], ['newsong', 'play', 'pause', 'stop', 'jump']],
     );
 
     main::INFOLOG && $log->is_info && $log->info(
@@ -76,9 +78,11 @@ sub shutdownPlugin {
         'Eversolo Screen Control plugin shutting down.'
     );
 
-    # Kill every pending screen-off timer (one per player)
+    # Kill every pending screen-off timer (one per player).  Timers are keyed
+    # by the client object, so resolve each id back to its client to match.
     for my $id (keys %screenState) {
-        Slim::Utils::Timers::killTimers($id, \&_turnScreenOff);
+        my $client = Slim::Player::Client::getClient($id) || next;
+        Slim::Utils::Timers::killTimers($client, \&_turnScreenOff);
     }
     %screenState = ();
 
@@ -146,7 +150,7 @@ sub _onPlay {
     my $id = $client->id();
 
     # Cancel any pending screen-off timer for this player
-    Slim::Utils::Timers::killTimers($id, \&_turnScreenOff);
+    Slim::Utils::Timers::killTimers($client, \&_turnScreenOff);
 
     # On a song change we ALWAYS re-send Screen.ON.  This resets the
     # Eversolo's own screensaver/screen-off timer so it never kicks in
@@ -182,20 +186,25 @@ sub _onPlay {
 sub _onPauseOrStop {
     my $client = shift;
     my $id     = $client->id();
-    my $delay  = $prefs->client($client)->get('screen_off_delay') || 30;
+
+    # // not || so that a configured delay of 0 (immediate off) is honoured
+    my $delay = $prefs->client($client)->get('screen_off_delay');
+    $delay = 30 if !defined $delay;
 
     main::INFOLOG && $log->is_info && $log->info(
         sprintf('Eversolo [%s]: Pause/Stop detected — screen OFF in %ds',
             $client->name() || $id, $delay)
     );
 
-    # Reset any existing timer, then set a fresh one
-    Slim::Utils::Timers::killTimers($id, \&_turnScreenOff);
+    # Reset any existing timer, then set a fresh one.  Key the timer on the
+    # client object (a unique reference) — NOT $id.  Slim::Utils::Timers
+    # matches the key numerically, so two players' string ids would collide
+    # and one player's killTimers would cancel another player's off-timer.
+    Slim::Utils::Timers::killTimers($client, \&_turnScreenOff);
     Slim::Utils::Timers::setTimer(
-        $id,                          # obj  (used to match killTimers)
+        $client,                      # obj  (used to match killTimers)
         time() + $delay,              # when
         \&_turnScreenOff,             # callback
-        $client,                      # extra arg passed to callback
     );
 }
 
@@ -203,32 +212,27 @@ sub _onPauseOrStop {
 #  Timer fires — actually turn the screen off
 # ---------------------------------------------------------------------------
 sub _turnScreenOff {
-    my ($id, $client) = @_;
+    my $client = shift;          # timer key is the client object
+    return unless $client && ref $client;
+
+    my $id = $client->id();
 
     # Safety: if playback has resumed in the meantime, bail out
-    if ($client && ref $client) {
-        my $mode = Slim::Player::Source::playmode($client) || 'stop';
-        if ($mode eq 'play') {
-            main::DEBUGLOG && $log->is_debug && $log->debug(
-                sprintf('Eversolo [%s]: Timer fired but player is playing — skipping OFF',
-                    $client->name() || $id)
-            );
-            return;
-        }
+    my $mode = Slim::Player::Source::playmode($client) || 'stop';
+    if ($mode eq 'play') {
+        main::DEBUGLOG && $log->is_debug && $log->debug(
+            sprintf('Eversolo [%s]: Timer fired but player is playing — skipping OFF',
+                $client->name() || $id)
+        );
+        return;
     }
 
     main::INFOLOG && $log->is_info && $log->info(
-        sprintf('Eversolo [%s]: Delay elapsed — turning screen OFF', $id)
+        sprintf('Eversolo [%s]: Delay elapsed — turning screen OFF',
+            $client->name() || $id)
     );
 
-    # We need the client to read per-player prefs; find it by id if needed
-    if (!$client || !ref $client) {
-        $client = Slim::Player::Client::getClient($id);
-    }
-
-    if ($client) {
-        _sendEversoloCommand($client, 'Key.Screen.OFF');
-    }
+    _sendEversoloCommand($client, 'Key.Screen.OFF');
 
     $screenState{$id} = 0;
 }

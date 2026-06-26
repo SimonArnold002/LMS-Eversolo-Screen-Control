@@ -2,12 +2,12 @@
 <extension>
     <name>PLUGIN_EVERSOLO_SCREEN_CONTROL</name>
     <module>Plugins::EversoloScreenControl::Plugin</module>
-    <version>1.0.1</version>
+    <version>1.0.2</version>
     <description>PLUGIN_EVERSOLO_SCREEN_CONTROL_DESC</description>
     <creator>CrystalGipsy</creator>
     <email></email>
     <icon>plugins/EversoloScreenControl/html/images/icon.png</icon>
-    <homepageURL>https://github.com/youruser/EversoloScreenControl</homepageURL>
+    <homepageURL>https://github.com/SimonArnold002/LMS-Eversolo-Screen-Control</homepageURL>
     <defaultState>enabled</defaultState>
     <type>2</type>
     <!-- type=2 means extension -->

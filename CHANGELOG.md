@@ -12,6 +12,26 @@ Version numbering follows [Semantic Versioning](https://semver.org/):
 
 ---
 
+## [1.0.2] — 2026-06-26
+
+### Bug Fixes
+- Fixed: with more than one Eversolo player, resuming playback on one player
+  could cancel another player's pending screen-off timer (the timer was keyed
+  by the MAC string, which `Slim::Utils::Timers` compares numerically, so all
+  ids collided). Timers are now keyed by the client object.
+- Fixed: a **Screen Off Delay** of `0` (immediate off) was treated as "unset"
+  and silently became 30 seconds. A configured `0` is now honoured.
+
+### Changes
+- Narrowed the playback event subscription to play-state changes only, so
+  read-only `playlist` queries no longer wake the callback.
+- Removed an unused `SCANNER` log-group assignment from the log category.
+- Removed redundant settings-page pref population (the framework already
+  repopulates after save).
+- Corrected the placeholder homepage URL in `install.xml`.
+
+---
+
 ## [1.0.1] — 2026-06-05
 
 ### Bug Fixes
