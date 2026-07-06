@@ -12,6 +12,18 @@ Version numbering follows [Semantic Versioning](https://semver.org/):
 
 ---
 
+## [1.0.3] — 2026-07-06
+
+### Bug Fixes
+- Fixed: the per-player settings page rendered with all fields blank (a v1.0.2
+  regression). v1.0.2 removed the block that populated the template's unprefixed
+  `prefs.*` keys, on the mistaken assumption that `SUPER::handler` repopulates
+  them. The LMS framework only fills the `pref_`-prefixed keys, which this
+  template does not read, so every field came back empty/unchecked. The manual
+  population has been restored.
+
+---
+
 ## [1.0.2] — 2026-06-26
 
 ### Bug Fixes

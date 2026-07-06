@@ -20,7 +20,7 @@ use Slim::Utils::Prefs;
 use Slim::Utils::Timers;
 use Slim::Networking::SimpleAsyncHTTP;
 
-use constant PLUGIN_VERSION => '1.0.2';
+use constant PLUGIN_VERSION => '1.0.3';
 
 my $log = Slim::Utils::Log->addLogCategory({
     'category'     => 'plugin.eversoloscreencontrol',

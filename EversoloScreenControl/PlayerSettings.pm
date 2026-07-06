@@ -74,10 +74,20 @@ sub handler {
         $params->{'screen_off_delay'} = int($delay);
     }
 
-    # Pass the live player IP so the template can display it.  The per-player
-    # pref values themselves are populated into $params->{prefs} by
-    # SUPER::handler (after it saves), so we don't set them here.
+    # Populate current per-player values for the template.  NOTE: the base
+    # Slim::Web::Settings::handler only fills PREFIX-ed keys ($params->{prefs}
+    # ->{pref_enabled} etc.), but this template reads the UNPREFIXED keys
+    # (prefs.enabled, prefs.eversolo_ip, ...).  Without this block every field
+    # renders blank/unchecked and the settings page appears broken, so we must
+    # populate them here.
     if ($client) {
+        $params->{'prefs'}->{'enabled'}          = $prefs->client($client)->get('enabled');
+        $params->{'prefs'}->{'auto_detect_ip'}   = $prefs->client($client)->get('auto_detect_ip');
+        $params->{'prefs'}->{'eversolo_ip'}      = $prefs->client($client)->get('eversolo_ip') || '';
+        $params->{'prefs'}->{'eversolo_port'}    = $prefs->client($client)->get('eversolo_port');
+        $params->{'prefs'}->{'screen_off_delay'} = $prefs->client($client)->get('screen_off_delay');
+
+        # Pass the live player IP so the template can display it
         $params->{'playerIP'} = $playerIP;
     }
 
