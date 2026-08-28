@@ -16,7 +16,7 @@ The plugin is **per-player**, not global. It appears in the **Player Settings**
 menu (alongside DSD Player, etc.) and is enabled/disabled independently for each
 LMS player. Players not attached to an Eversolo simply leave it off and are unaffected.
 
-**Current version: 1.1.0**
+**Current version: 1.2.0**
 
 ## How it works
 
@@ -39,36 +39,59 @@ LMS player. Players not attached to an Eversolo simply leave it off and are unaf
 - Commands used: `Key.Screen.ON`, `Key.Screen.OFF`.
   (This is the Zidoo remote-control API that Eversolo's firmware exposes.)
 
-### IP resolution
+### Address resolution (critical)
 
-For a direct SlimProto player the Eversolo runs the Squeezelite, so the player's
-IP **is** the Eversolo's IP. That assumption is the whole of auto-detect, and it
-holds only for players with a real socket.
+**The Eversolo's address is a property of the DEVICE, not of the player.** The
+plugin is configured on whatever player feeds that Eversolo, and that player may
+be a bridge sitting anywhere on the network — LMS → HQPlayer Bridge → HQPlayer →
+Eversolo is a supported chain. The player's own IP is therefore irrelevant except
+in the one case where the two happen to be the same box (a Squeezelite running on
+the Eversolo itself).
 
-- `auto_detect_ip` (per-player pref, **default on**): the live IP is resolved at
-  command-send time via `$client->ip()` inside the `_resolveIP()` helper. This
-  follows DHCP changes automatically — do not cache the IP at config time.
-- When `auto_detect_ip` is off, the manually entered `eversolo_ip` pref is used.
+`_resolveIP()` ladder, in order:
 
-**Bridged / virtual players (critical).** A player with no SlimProto socket —
-HQPlayer Bridge, LMS-Groups, a UPnP bridge — reports whatever placeholder address
-its creator passed to the `Slim::Player::Client` constructor. HQPlayer Bridge
-passes `pack_sockaddr_in(0, INADDR_LOOPBACK)`, so `$client->ip()` is `127.0.0.1`
-and every command lands on the LMS server itself ("Connect timed out: Transport
-endpoint is not connected"). `isPlaceholderIP()` recognises loopback, `0.0.0.0`,
-`::`, `::1` and empty; when auto-detect hits one, `_resolveIP()` **falls back to
-the manual address**, so auto-detect can stay ticked on a bridged player. With no
-manual address set it still returns the detected one — on a server running *on*
-the Eversolo, loopback really is the device — and logs one actionable warning per
-player/address (`%warnedPlaceholder`).
+1. **`eversolo_ip` configured for this player — always wins.** Hardcode it and
+   nothing else is consulted. This is the answer for any bridged player, and for
+   a network with more than one Eversolo.
+2. **A device found by the network scan.** Exactly one match is used outright, so
+   a bridged player works with no configuration at all. More than one and the
+   plugin refuses to guess — it warns and the settings page asks.
+3. **The player's own IP**, only when `auto_detect_ip` is on and the address is
+   real (`isPlaceholderIP()` rejects loopback, `0.0.0.0`, `::`, `::1`, empty).
 
-Do not "fix" this by detecting the bridge plugin, the player `model`, or
-`tcpsock`: bridges vary and several set `tcpsock(1)` precisely to look connected.
-Judge the address, not the player class.
+Do not reorder these. An earlier build put the player's IP first, which silently
+sent commands to whatever the bridge reported — the HQPlayer host, then the LMS
+server itself once the bridge switched to `INADDR_LOOPBACK`.
 
-This live-resolution behaviour was the fix for the v1.0.1 bug, where a stored IP
-went stale after a DHCP lease change. **Keep IP resolution lazy.** Don't reintroduce
-a cached-at-startup IP.
+Bridged/virtual players (HQPlayer Bridge, LMS-Groups, UPnP bridges) have no
+SlimProto socket and report whatever placeholder their creator passed to the
+`Slim::Player::Client` constructor. Never detect this by player `model` or by
+`tcpsock` — bridges set `tcpsock(1)` precisely to look connected. Judge the
+address.
+
+Resolution stays lazy — resolved at send time, never cached at config time. That
+was the v1.0.1 fix for a stored IP going stale after a DHCP lease change.
+
+### Network scan (Discovery.pm)
+
+Finds Eversolos by asking the same control API the plugin drives:
+`GET http://<ip>:9529/ZidooControlCenter/getDeviceInfo` → JSON with
+`"status":200` and a model/name. A responder on that port IS the device, so
+there is no vendor discovery protocol to speak and nothing to install.
+
+- Candidates are the /24 around each of the server's own IPv4 addresses
+  (`Slim::Utils::IPDetect::IP`, `Slim::Utils::Network::hostAddr`), loopback
+  excluded. A device on another subnet is out of reach — that is what the
+  address field is for.
+- Non-blocking throughout: `SimpleAsyncHTTP`, 2s timeout, **20 probes in flight**
+  (`CONCURRENCY`). 253 of 254 probes fail — the error callback must stay silent,
+  no logging and no retry, or a sweep floods the log.
+- **Single-flight.** A second caller during a sweep is parked in `@WAITING` and
+  answered from the first sweep's result; a settings-page reload must never put
+  a second 254-probe pass on the wire.
+- Runs `STARTUP_SCAN_DELAY` (20s) after init, then every `RESCAN_INTERVAL`
+  (1h), and on demand from the settings page's Scan button. The rescan timer is
+  keyed on `undef` — one scan for the whole server, not one per player.
 
 ## Per-player architecture (critical)
 
@@ -90,6 +113,7 @@ global would break multi-device setups.
 ```
 EversoloScreenControl/
 ├── Plugin.pm            # Core logic: event subscriptions, ON/OFF, _resolveIP(), timers
+├── Discovery.pm         # Non-blocking subnet sweep for Eversolos on the control API
 ├── PlayerSettings.pm    # Per-player settings page (needsClient => 1)
 ├── install.xml          # LMS plugin metadata + <version> (creator: CrystalGipsy)
 ├── strings.txt          # Localised UI strings (PLUGIN_EVERSOLO_*)

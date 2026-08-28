@@ -65,18 +65,27 @@ You'll see these settings for the currently selected player:
 | Setting | Description | Default |
 |---|---|---|
 | **Enable Eversolo Screen Control** | Activate screen control for *this* player | Off |
-| **Auto-detect Eversolo IP** | Use the player's own live IP as the device address | On |
-| **Manual Eversolo IP Address** | IP of the DMP-A8 — used when auto-detect is off, and as the fallback when auto-detect finds no real address | — |
+| **Eversolo IP Address** | The Eversolo this player feeds. Empty = use the device found by the network scan | — |
+| **Scan** | Look for Eversolos on the network now | — |
+| **Auto-detect Eversolo IP** | Last resort: use the player's own IP (only right when the player runs on the Eversolo) | On |
 | **Eversolo API Port** | HTTP control port | `9529` |
 | **Screen Off Delay (seconds)** | Wait time after pause/stop before screen off | `30` |
 
 Only players where **Enable** is ticked trigger Eversolo commands. All other players are ignored.
 
+### It finds the Eversolo for you
+
+The plugin sweeps the local network for devices answering the Eversolo control API and uses what it finds, so in the common case there is nothing to configure: tick Enable and play something.
+
+The address is resolved in this order:
+
+1. **The address you set** — always wins. Set it to pin one particular Eversolo.
+2. **A device found by the scan** — used outright when there's exactly one. With several, the settings page lists them and you pick.
+3. **The player's own IP** — only when *Auto-detect* is on and the player really is the Eversolo (its own Squeezelite).
+
 ### Bridged and virtual players
 
-Auto-detect works by assuming the player *is* the Eversolo, which is true for the Squeezelite running on the device itself. It is not true for a **bridged or virtual player** — HQPlayer Bridge, player groups, a UPnP bridge — because those have no SlimProto connection and so no network address of their own; LMS reports a placeholder (usually `127.0.0.1`, the server itself).
-
-For those players, enter the Eversolo's address in **Manual Eversolo IP Address**. Auto-detect can stay ticked: it falls back to the manual address whenever there is no real one to detect. The settings page says which address commands are actually being sent to.
+The player driving the Eversolo doesn't have to be the Eversolo. **LMS → HQPlayer Bridge → HQPlayer → Eversolo** works exactly like a direct connection: the plugin is configured on whichever player you play to, and the screen commands go to the Eversolo at its own address. Bridged and virtual players (HQPlayer Bridge, player groups, UPnP bridges) have no network address of their own — that's fine, because the player's address isn't what's used.
 
 ### Finding your Eversolo's IP
 

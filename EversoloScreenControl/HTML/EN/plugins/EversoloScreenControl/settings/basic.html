@@ -36,13 +36,28 @@
             </td>
         </tr>
 
-        <!-- Manual Eversolo IP Address -->
+        <!-- Eversolo device: found on the network, or entered by hand -->
         <tr>
             <td class="prefHead">[% "PLUGIN_EVERSOLO_IP" | string %]</td>
             <td class="prefBody">
                 <input type="text" name="eversolo_ip" value="[% prefs.eversolo_ip | html %]"
                     size="20" placeholder="192.168.1.50" />
+                <input type="submit" name="scanNow" value="[% "PLUGIN_EVERSOLO_SCAN" | string %]" />
                 <span class="prefDesc">[% "PLUGIN_EVERSOLO_IP_DESC" | string %]</span>
+
+                [% IF scanning %]
+                    <br /><span class="prefDesc">[% "PLUGIN_EVERSOLO_SCANNING" | string %]</span>
+                [% ELSIF foundDevices.size %]
+                    <br /><span class="prefDesc">[% "PLUGIN_EVERSOLO_SCAN_FOUND" | string %]</span>
+                    <ul style="margin:4px 0 0 18px; padding:0">
+                    [% FOREACH dev IN foundDevices %]
+                        <li><span style="font-weight:bold">[% dev.ip | html %]</span> — [% dev.name | html %]</li>
+                    [% END %]
+                    </ul>
+                [% ELSIF scanned %]
+                    <br /><span class="prefDesc">[% "PLUGIN_EVERSOLO_SCAN_NONE" | string %]</span>
+                [% END %]
+
                 [% IF effectiveIP %]
                     <br /><span class="prefDesc">[% "PLUGIN_EVERSOLO_IP_INUSE" | string %] <span style="font-weight:bold">[% effectiveIP | html %]</span></span>
                 [% END %]

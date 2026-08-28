@@ -20,7 +20,15 @@ use Slim::Utils::Prefs;
 use Slim::Utils::Timers;
 use Slim::Networking::SimpleAsyncHTTP;
 
-use constant PLUGIN_VERSION => '1.1.0';
+use Plugins::EversoloScreenControl::Discovery;
+
+use constant PLUGIN_VERSION => '1.2.0';
+
+# Seconds after plugin init before the first network scan, and the interval
+# between scans after that.  A sweep is cheap and asynchronous, but there is
+# no reason for it to share the startup window with the server's own init.
+use constant STARTUP_SCAN_DELAY => 20;
+use constant RESCAN_INTERVAL    => 3600;
 
 my $log = Slim::Utils::Log->addLogCategory({
     'category'     => 'plugin.eversoloscreencontrol',
@@ -74,6 +82,14 @@ sub initPlugin {
         [['playlist'], ['newsong', 'play', 'pause', 'stop', 'jump']],
     );
 
+    # Find the Eversolos on the network.  Deferred past startup so the sweep
+    # never competes with the server's own init, then repeated slowly so a
+    # device that was off at boot, or that moved on a new DHCP lease, is
+    # picked up without anyone touching the settings page.
+    Slim::Utils::Timers::setTimer(
+        undef, time() + STARTUP_SCAN_DELAY, \&_rescan,
+    );
+
     main::INFOLOG && $log->is_info && $log->info(
         'Eversolo Screen Control plugin initialised.'
     );
@@ -90,6 +106,8 @@ sub shutdownPlugin {
         my $client = Slim::Player::Client::getClient($id) || next;
         Slim::Utils::Timers::killTimers($client, \&_turnScreenOff);
     }
+    Slim::Utils::Timers::killTimers(undef, \&_rescan);
+
     %screenState       = ();
     %warnedPlaceholder = ();
 
@@ -120,62 +138,99 @@ sub isPlaceholderIP {
 }
 
 # ---------------------------------------------------------------------------
-#  Resolve the Eversolo IP for a given player.
+#  Resolve the Eversolo address for a given player.
 #
-#  auto_detect_ip off : always the manually stored address.
-#  auto_detect_ip on  : the player's live IP (resolved at send time, so DHCP
-#                       changes are followed), EXCEPT when that address is a
-#                       placeholder -- then the manual address is used instead.
+#  The Eversolo's address is a property of the DEVICE, not of the player: the
+#  plugin is configured on whatever player feeds that Eversolo, and the player
+#  may be a bridge sitting anywhere on the network.  So the address configured
+#  for this player always wins, and the player's own IP is only ever a
+#  convenience for the one case where they happen to be the same box.
 #
-#  The fallback is what makes bridged players work: auto-detect can stay on
-#  (it is the default and it is what every direct player wants) and the manual
-#  field simply fills the gap when there is no real address to detect.
+#  The ladder:
+#    1. the address configured for this player  — always wins
+#    2. a device found by the network scan      — one match, used outright
+#    3. the player's own IP                     — only when auto-detect is on
+#                                                  and it is a real address
+#                                                  (a Squeezelite running on
+#                                                  the Eversolo itself)
 # ---------------------------------------------------------------------------
 sub _resolveIP {
     my $client = shift;
 
     my $cprefs = $prefs->client($client);
 
+    # 1. Configured address. Hardcode it and nothing else is consulted.
     my $manual = $cprefs->get('eversolo_ip') || '';
     $manual =~ s/^\s+|\s+$//g;
+    return $manual if $manual ne '';
 
-    return $manual unless $cprefs->get('auto_detect_ip');
+    # 2. Discovered device. With exactly one Eversolo on the network there is
+    #    nothing to choose between, so use it — this is what makes a bridged
+    #    player work with no configuration at all. With several, the settings
+    #    page asks which one rather than guessing.
+    my $found = Plugins::EversoloScreenControl::Discovery::found();
+    my @ips   = sort keys %$found;
 
-    my $ip = $client->ip() || '';
-    $ip =~ s/:.*$//;   # strip port if present
-
-    if (isPlaceholderIP($ip)) {
-        _warnPlaceholder($client, $ip, $manual);
-
-        # Only override when there is something to override with.  With no
-        # manual address we still try the detected one: on a server running ON
-        # the Eversolo, loopback IS the device.
-        return $manual if $manual ne '';
+    if (@ips == 1) {
+        return $ips[0];
+    }
+    elsif (@ips > 1) {
+        _warnAmbiguous($client, \@ips);
     }
 
-    return $ip;
+    # 3. The player itself, when it really is the device.
+    if ($cprefs->get('auto_detect_ip')) {
+        my $ip = $client->ip() || '';
+        $ip =~ s/:.*$//;   # strip port if present
+
+        return $ip unless isPlaceholderIP($ip);
+
+        _warnPlaceholder($client, $ip, scalar(@ips));
+    }
+
+    return '';
+}
+
+# ---------------------------------------------------------------------------
+#  Periodic network scan.
+#
+#  Timers hand the keyed object back as the first argument (setTimer($obj, ...)
+#  calls $cb->($obj, @args)), so the leading undef here is the key, not a
+#  mistake — this timer is keyed on nothing because there is one scan for the
+#  whole server, not one per player.
+# ---------------------------------------------------------------------------
+sub _rescan {
+    Plugins::EversoloScreenControl::Discovery::scan(sub {
+        Slim::Utils::Timers::setTimer(
+            undef, time() + RESCAN_INTERVAL, \&_rescan,
+        );
+    });
+}
+
+sub _warnAmbiguous {
+    my ($client, $ips) = @_;
+
+    my $key = ($client->id() || '') . '/ambiguous';
+    return if $warnedPlaceholder{$key}++;
+
+    $log->warn(sprintf(
+        "Eversolo [%s]: %d devices answer the control API (%s) — pick the right one under Player Settings > Eversolo Screen Control",
+        $client->name() || $client->id(), scalar(@$ips), join(', ', @$ips)
+    ));
 }
 
 sub _warnPlaceholder {
-    my ($client, $ip, $manual) = @_;
+    my ($client, $ip, $foundCount) = @_;
 
     my $key = ($client->id() || '') . '/' . ($ip || '');
     return if $warnedPlaceholder{$key}++;
 
-    my $name = $client->name() || $client->id();
-
-    if ($manual ne '') {
-        main::INFOLOG && $log->is_info && $log->info(sprintf(
-            "Eversolo [%s]: no real player address to auto-detect (%s) — this is a bridged or virtual player; using the configured address %s instead",
-            $name, $ip || 'none', $manual
-        ));
-    }
-    else {
-        $log->warn(sprintf(
-            "Eversolo [%s]: auto-detect resolved %s, which is not a device address — this player is bridged or virtual, so LMS has no IP for the hardware. Enter the Eversolo's address under Player Settings > Eversolo Screen Control.",
-            $name, $ip || 'nothing'
-        ));
-    }
+    $log->warn(sprintf(
+        "Eversolo [%s]: this player is bridged or virtual (%s), and the network scan found %s — set the Eversolo's address under Player Settings > Eversolo Screen Control, or press Scan again once the device is awake.",
+        $client->name() || $client->id(),
+        $ip || 'no address',
+        $foundCount ? "$foundCount devices to choose between" : 'no device'
+    ));
 }
 
 # ---------------------------------------------------------------------------

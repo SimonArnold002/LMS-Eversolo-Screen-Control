@@ -12,6 +12,8 @@ use base qw(Slim::Web::Settings);
 use Slim::Utils::Prefs;
 use Slim::Utils::Log;
 
+use Plugins::EversoloScreenControl::Discovery;
+
 my $prefs = preferences('plugin.eversoloscreencontrol');
 my $log   = logger('plugin.eversoloscreencontrol');
 
@@ -48,6 +50,14 @@ sub handler {
     if ($client) {
         $playerIP = $client->ip() || '';
         $playerIP =~ s/:.*$//;
+    }
+
+    # ---- Scan button ----
+    # Kicks a sweep and returns immediately; the sweep is asynchronous, so the
+    # results land on the next render of this page rather than blocking it.
+    # Handled before saveSettings so pressing Scan never rewrites prefs.
+    if ($params->{'scanNow'}) {
+        Plugins::EversoloScreenControl::Discovery::scan();
     }
 
     if ($params->{'saveSettings'} && $client) {
@@ -98,13 +108,23 @@ sub handler {
         # Pass the live player IP so the template can display it, plus whether
         # it is a real device address at all.  A bridged or virtual player
         # (HQPlayer Bridge, Groups, a UPnP bridge) has no socket and reports a
-        # placeholder, so auto-detect has nothing to work with and the manual
-        # address below is the only way to reach the hardware.
+        # placeholder — which is fine, because the Eversolo's address is a
+        # property of the device, not of the player.
         $params->{'playerIP'}       = $playerIP;
         $params->{'playerBridged'}  =
             Plugins::EversoloScreenControl::Plugin::isPlaceholderIP($playerIP) ? 1 : 0;
         $params->{'effectiveIP'}    =
             Plugins::EversoloScreenControl::Plugin::_resolveIP($client) || '';
+
+        # Devices found on the network, newest sweep.  The template renders
+        # them as one-click choices for the address field.
+        my $found = Plugins::EversoloScreenControl::Discovery::found();
+
+        $params->{'foundDevices'} = [
+            map { { ip => $_, name => $found->{$_} } } sort keys %$found
+        ];
+        $params->{'scanning'}  = Plugins::EversoloScreenControl::Discovery::isScanning() ? 1 : 0;
+        $params->{'scanned'}   = Plugins::EversoloScreenControl::Discovery::lastScan()   ? 1 : 0;
     }
 
     return $class->SUPER::handler($client, $params);
