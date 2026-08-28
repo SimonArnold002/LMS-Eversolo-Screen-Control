@@ -50,6 +50,60 @@ my @WAITING;
 my %FOUND;
 my $LAST_SCAN = 0;
 
+# ---------------------------------------------------------------------------
+#  Ask a device what IT thinks it is doing.
+#
+#  /ZidooMusicControl/v2/getState answers {"status":200,"state":N,...} where the
+#  state is 0 idle, 3 playing, 4 paused (Eversolo's own app and the Home
+#  Assistant integration read the same field).  $cb->('play'|'pause'|'stop') on
+#  a clear answer, $cb->(undef) when the device cannot be reached or says
+#  something unrecognised — undef means "no opinion", never "stopped", because
+#  a missed reply must not blank a screen mid-track.
+#
+#  This is the second half of a two-way check: LMS's idea of the player and the
+#  device's own idea of itself, with the device winning when they disagree.
+#  It is called sparingly by design — see _reconcile in Plugin.pm.
+# ---------------------------------------------------------------------------
+sub deviceState {
+    my ($ip, $port, $cb) = @_;
+
+    return $cb->(undef) unless $ip;
+    $port ||= 9529;
+
+    Slim::Networking::SimpleAsyncHTTP->new(
+        sub {
+            my $body = shift->content || '';
+
+            my ($state) = $body =~ /"state"\s*:\s*(\d+)/;
+
+            if ( !defined $state ) {
+                main::DEBUGLOG && $log->is_debug && $log->debug(
+                    "Eversolo: $ip answered getState with no state field");
+                return $cb->(undef);
+            }
+
+            my $mode = $state == 3 ? 'play'
+                     : $state == 4 ? 'pause'
+                     : $state == 0 ? 'stop'
+                     :               undef;
+
+            main::DEBUGLOG && $log->is_debug && $log->debug(
+                "Eversolo: $ip reports state=$state (" . ( $mode || 'unrecognised' ) . ')');
+
+            $cb->($mode);
+        },
+        sub {
+            my (undef, $error) = @_;
+            main::INFOLOG && $log->is_info && $log->info(
+                "Eversolo: could not ask $ip what it is doing — " . ( $error || 'no answer' ));
+            $cb->(undef);
+        },
+        { timeout => PROBE_TIMEOUT },
+    )->get("http://${ip}:${port}/ZidooMusicControl/v2/getState");
+
+    return;
+}
+
 sub found     { return { %FOUND } }
 sub lastScan  { return $LAST_SCAN }
 sub isScanning{ return $SCANNING }

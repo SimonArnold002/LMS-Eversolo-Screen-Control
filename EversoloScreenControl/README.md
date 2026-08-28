@@ -87,9 +87,13 @@ The address is resolved in this order:
 
 The player driving the Eversolo doesn't have to be the Eversolo. **LMS → HQPlayer Bridge → HQPlayer → Eversolo** works exactly like a direct connection: the plugin is configured on whichever player you play to, and the screen commands go to the Eversolo at its own address. Bridged and virtual players (HQPlayer Bridge, player groups, UPnP bridges) have no network address of their own — that's fine, because the player's address isn't what's used.
 
-### It corrects itself
+### It corrects itself, and it asks the Eversolo
 
-The screen doesn't rely on catching every event. Once a minute the plugin checks each enabled player's actual state and fixes any disagreement — so a player that stopped while the server was restarting, or a stop the bridge never announced, still ends with the screen off. It only sends a command when the state is wrong, so a device that's already correct sees no traffic at all.
+The screen doesn't rely on catching every event. Once a minute the plugin checks each enabled player's actual state and fixes any disagreement — so a player that stopped while the server was restarting, or a stop the bridge never announced, still ends with the screen off.
+
+It also doesn't take LMS's word as final. A player fed through a bridge can get stuck reporting "playing" with a frozen clock after the far end stops talking. When the plugin sees that — playing, but the song position hasn't moved — it asks the Eversolo directly what *it* is doing, and sets the screen to match.
+
+That question is only asked when it can change the answer: playing with a moving clock, or plainly stopped, are both settled without touching the network. In normal use the plugin makes no calls to the device at all beyond the ON and OFF it already sends.
 
 ### Finding your Eversolo's IP
 

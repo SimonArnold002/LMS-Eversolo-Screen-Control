@@ -16,7 +16,7 @@ The plugin is **per-player**, not global. It appears in the **Player Settings**
 menu (alongside DSD Player, etc.) and is enabled/disabled independently for each
 LMS player. Players not attached to an Eversolo simply leave it off and are unaffected.
 
-**Current version: 1.3.0**
+**Current version: 1.4.0**
 
 ## How it works
 
@@ -42,6 +42,9 @@ developer docs plus the open-source client `wizmo2/zidoo-player`. A guessed
 - Default port: **9529**. Root: `/ZidooControlCenter/`.
 - **Send a key:** `RemoteControl/sendkey?key=<COMMAND>` → `{"status":200}`.
   Commands used: `Key.Screen.ON`, `Key.Screen.OFF`.
+- **What is it doing:** `ZidooMusicControl/v2/getState` → `{"status":200,
+  "state":N,...}` with N = 0 idle, 3 playing, 4 paused. Same field Eversolo's
+  own app and the Home Assistant integration (hchris1/Eversolo) read.
 - **Identify a device:** `getModel` → `{"status":200,"model":"...",
   "net_mac":"...","wif_mac":"...","firmware":"...","androidversion":"...",
   "language":"...","ram":"...","flash":"..."}`. This is what the network scan
@@ -129,6 +132,34 @@ the pass assert the screen after a restart instead of assuming it is right.
 timer is pending** (`killTimers` only reports what it removed). Without it the
 reconcile would stack a second off-timer on every pass. Set it in
 `_onPauseOrStop`, clear it in `_turnScreenOff` and in `_onPlay`.
+
+### Two-way state, and when the device is asked (critical)
+
+LMS's player state is **not** authoritative. A player fed through a bridge can
+be stranded in `play` with a frozen song clock when the far end stops talking —
+observed live: `mode=play, elapsed=100` unchanged over minutes while nothing was
+playing, because the HQPlayer Bridge's status subscription had gone silent. The
+screen followed LMS and stayed on. No amount of event handling fixes that,
+because the state being reacted to is itself wrong.
+
+So the reconcile also consults the device — but **only when it can change the
+answer**, because polling a device once a minute for ever is exactly what this
+plugin must not do:
+
+- LMS says playing and the clock is **moving** → trust it, no call.
+- LMS says not playing → assert off, no call.
+- LMS says playing and the clock is **frozen between two passes** → LMS is
+  stale. Ask `/ZidooMusicControl/v2/getState` once and believe the answer:
+  `state` 3 playing, 4 paused, 0 idle.
+
+That is at most one HTTP call per stuck player per interval, and none at all in
+normal operation. `%lastElapsed` holds the sampled position that drives it.
+
+A device that does not answer returns **undef, meaning "no opinion"** — never
+"stopped". A missed reply must not blank a screen mid-track.
+
+In the stale case the command is sent regardless of `%screenState`: the belief
+about the screen is precisely what has just been shown to be unreliable.
 
 ## Per-player architecture (critical)
 

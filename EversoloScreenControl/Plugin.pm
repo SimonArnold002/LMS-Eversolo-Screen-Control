@@ -28,7 +28,7 @@ use Slim::Player::Source;
 
 use Plugins::EversoloScreenControl::Discovery;
 
-use constant PLUGIN_VERSION => '1.3.0';
+use constant PLUGIN_VERSION => '1.4.0';
 
 # Seconds after plugin init before the first network scan, and the interval
 # between scans after that.  A sweep is cheap and asynchronous, but there is
@@ -73,6 +73,12 @@ my %screenState;
 # what it removed), so the pending state is tracked here — the reconcile pass
 # must not stack a second off-timer on top of one that is already running.
 my %offPending;
+
+# Last song position seen for a player { client_id => seconds }, sampled once
+# per reconcile pass.  A position that does not move between two passes while
+# LMS still claims 'play' is the signal that LMS's state is stale — that is
+# what triggers the one and only call the plugin makes to the device itself.
+my %lastElapsed;
 
 # Players already warned about a placeholder address (see _warnPlaceholder),
 # keyed id/address so a DHCP change or a re-created bridge player warns again.
@@ -145,6 +151,7 @@ sub shutdownPlugin {
 
     %screenState       = ();
     %offPending        = ();
+    %lastElapsed       = ();
     %warnedPlaceholder = ();
 
     Slim::Control::Request::unsubscribe(\&_playbackCallback);
@@ -253,7 +260,25 @@ sub _reconcile {
         my $mode = Slim::Player::Source::playmode($client) || 'stop';
 
         if ($mode eq 'play') {
-            # Playing but the screen is off or unknown — assert it on.
+
+            # LMS says playing.  Trust it only if the song clock is actually
+            # moving: a player fed through a bridge can be stranded in 'play'
+            # with a frozen clock when the far end stops talking, and then the
+            # screen would stay on for ever on the strength of a stale state.
+            my $now  = Slim::Player::Source::songTime($client) || 0;
+            my $prev = $lastElapsed{$id};
+
+            $lastElapsed{$id} = $now;
+
+            if ( defined $prev && $now == $prev ) {
+                # Frozen.  Ask the device itself rather than guess — this is
+                # the only case that costs a network call, and it happens only
+                # once per interval per stuck player.
+                _askDevice($client);
+                next;
+            }
+
+            # Playing and the clock is moving — assert the screen on.
             next if $screenState{$id};
 
             main::INFOLOG && $log->is_info && $log->info(sprintf(
@@ -265,6 +290,8 @@ sub _reconcile {
         }
         else {
             # Not playing.  Known-off is the only state that needs nothing.
+            delete $lastElapsed{$id};
+
             next if defined $screenState{$id} && !$screenState{$id};
             next if $offPending{$id};
 
@@ -281,6 +308,59 @@ sub _reconcile {
     Slim::Utils::Timers::setTimer(
         undef, time() + RECONCILE_INTERVAL, \&_reconcile,
     );
+}
+
+# ---------------------------------------------------------------------------
+#  LMS claims this player is playing but its clock has not moved.  Ask the
+#  Eversolo what IT is doing and assert the screen to match — the device knows,
+#  and LMS in this state does not.
+#
+#  Whatever the answer, the command is sent rather than skipped on the strength
+#  of what the screen is believed to be doing: the belief is exactly what has
+#  just been shown to be unreliable.  A device that answers nothing at all is
+#  left alone.
+# ---------------------------------------------------------------------------
+sub _askDevice {
+    my $client = shift;
+
+    my $id   = $client->id() || return;
+    my $ip   = _resolveIP($client) || return;
+    my $port = $prefs->client($client)->get('eversolo_port') || 9529;
+
+    Plugins::EversoloScreenControl::Discovery::deviceState($ip, $port, sub {
+        my $deviceMode = shift;
+
+        my $name = $client->name() || $id;
+
+        if ( !defined $deviceMode ) {
+            main::INFOLOG && $log->is_info && $log->info(
+                "Eversolo [$name]: LMS is stuck on 'play' with a frozen clock and the device did not answer — leaving the screen alone"
+            );
+            return;
+        }
+
+        if ( $deviceMode eq 'play' ) {
+            main::DEBUGLOG && $log->is_debug && $log->debug(
+                "Eversolo [$name]: LMS's clock is frozen but the device is playing — screen stays on"
+            );
+            _sendEversoloCommand($client, 'Key.Screen.ON');
+            $screenState{$id} = 1;
+            return;
+        }
+
+        $log->info(sprintf(
+            "Eversolo [%s]: LMS still says 'play' but the device says it is %s — turning the screen off",
+            $name, $deviceMode eq 'pause' ? 'paused' : 'stopped'
+        ));
+
+        Slim::Utils::Timers::killTimers($client, \&_turnScreenOff);
+        delete $offPending{$id};
+
+        _sendEversoloCommand($client, 'Key.Screen.OFF');
+        $screenState{$id} = 0;
+    });
+
+    return;
 }
 
 # ---------------------------------------------------------------------------
