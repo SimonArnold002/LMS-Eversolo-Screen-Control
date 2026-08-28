@@ -20,7 +20,7 @@ use Slim::Utils::Prefs;
 use Slim::Utils::Timers;
 use Slim::Networking::SimpleAsyncHTTP;
 
-use constant PLUGIN_VERSION => '1.0.3';
+use constant PLUGIN_VERSION => '1.1.0';
 
 my $log = Slim::Utils::Log->addLogCategory({
     'category'     => 'plugin.eversoloscreencontrol',
@@ -39,6 +39,12 @@ $prefs->setPlayerDefault('screen_off_delay', 30);
 
 # Per-player screen-state tracker  { client_id => 0|1 }
 my %screenState;
+
+# Players already warned about a placeholder address (see _warnPlaceholder),
+# keyed id/address so a DHCP change or a re-created bridge player warns again.
+# Declared up here because shutdownPlugin clears it, and a lexical has to be
+# in scope textually before the sub that uses it is compiled.
+my %warnedPlaceholder;
 
 sub getDisplayName {
     return 'PLUGIN_EVERSOLO_SCREEN_CONTROL';
@@ -84,26 +90,92 @@ sub shutdownPlugin {
         my $client = Slim::Player::Client::getClient($id) || next;
         Slim::Utils::Timers::killTimers($client, \&_turnScreenOff);
     }
-    %screenState = ();
+    %screenState       = ();
+    %warnedPlaceholder = ();
 
     Slim::Control::Request::unsubscribe(\&_playbackCallback);
 }
 
 # ---------------------------------------------------------------------------
+#  Is this address something that could be an Eversolo out on the network?
+#
+#  Auto-detect assumes the player IS the Eversolo, which holds for a
+#  Squeezelite talking SlimProto from the device itself.  It does NOT hold for
+#  a bridged or virtual player (HQPlayer Bridge, LMS-Groups, UPnP bridges):
+#  those have no socket, so LMS reports whatever placeholder address their
+#  creator handed the constructor.  HQPlayer Bridge passes INADDR_LOOPBACK, so
+#  the player answers 127.0.0.1 and every command goes to the LMS server
+#  itself -- "Connect timed out: Transport endpoint is not connected".
+#
+#  Called from PlayerSettings too, to flag the same case in the UI.
+# ---------------------------------------------------------------------------
+sub isPlaceholderIP {
+    my $ip = shift;
+
+    return 1 if !defined $ip || $ip eq '';
+    return 1 if $ip =~ /^127\./;                 # loopback
+    return 1 if $ip eq '0.0.0.0' || $ip eq '::' || $ip eq '::1';
+
+    return 0;
+}
+
+# ---------------------------------------------------------------------------
 #  Resolve the Eversolo IP for a given player.
-#  If auto_detect_ip is on, use the player's live IP (from $client->ip()).
-#  Otherwise fall back to the manually stored IP.
+#
+#  auto_detect_ip off : always the manually stored address.
+#  auto_detect_ip on  : the player's live IP (resolved at send time, so DHCP
+#                       changes are followed), EXCEPT when that address is a
+#                       placeholder -- then the manual address is used instead.
+#
+#  The fallback is what makes bridged players work: auto-detect can stay on
+#  (it is the default and it is what every direct player wants) and the manual
+#  field simply fills the gap when there is no real address to detect.
 # ---------------------------------------------------------------------------
 sub _resolveIP {
     my $client = shift;
 
-    if ($prefs->client($client)->get('auto_detect_ip')) {
-        my $ip = $client->ip() || '';
-        $ip =~ s/:.*$//;   # strip port if present
-        return $ip;
+    my $cprefs = $prefs->client($client);
+
+    my $manual = $cprefs->get('eversolo_ip') || '';
+    $manual =~ s/^\s+|\s+$//g;
+
+    return $manual unless $cprefs->get('auto_detect_ip');
+
+    my $ip = $client->ip() || '';
+    $ip =~ s/:.*$//;   # strip port if present
+
+    if (isPlaceholderIP($ip)) {
+        _warnPlaceholder($client, $ip, $manual);
+
+        # Only override when there is something to override with.  With no
+        # manual address we still try the detected one: on a server running ON
+        # the Eversolo, loopback IS the device.
+        return $manual if $manual ne '';
     }
 
-    return $prefs->client($client)->get('eversolo_ip') || '';
+    return $ip;
+}
+
+sub _warnPlaceholder {
+    my ($client, $ip, $manual) = @_;
+
+    my $key = ($client->id() || '') . '/' . ($ip || '');
+    return if $warnedPlaceholder{$key}++;
+
+    my $name = $client->name() || $client->id();
+
+    if ($manual ne '') {
+        main::INFOLOG && $log->is_info && $log->info(sprintf(
+            "Eversolo [%s]: no real player address to auto-detect (%s) — this is a bridged or virtual player; using the configured address %s instead",
+            $name, $ip || 'none', $manual
+        ));
+    }
+    else {
+        $log->warn(sprintf(
+            "Eversolo [%s]: auto-detect resolved %s, which is not a device address — this player is bridged or virtual, so LMS has no IP for the hardware. Enter the Eversolo's address under Player Settings > Eversolo Screen Control.",
+            $name, $ip || 'nothing'
+        ));
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -257,6 +329,12 @@ sub _sendEversoloCommand {
             timeout => 5,
             command => $key,
             player  => ($client->name() || $client->id()),
+            target  => "${ip}:${port}",
+            # A failure against a placeholder address has one cause and one
+            # cure, so say so in the error rather than leaving a bare timeout.
+            hint    => isPlaceholderIP($ip)
+                ? " (that address is this server, not an Eversolo — set the device's IP under Player Settings > Eversolo Screen Control)"
+                : '',
         },
     );
 
@@ -277,7 +355,9 @@ sub _httpError {
     my $error   = shift || 'unknown error';
     my $command = $http->params('command') || '';
     my $player  = $http->params('player')  || '';
-    $log->error("Eversolo [$player]: Failed '$command' — $error");
+    my $target  = $http->params('target')  || '';
+    my $hint    = $http->params('hint')    || '';
+    $log->error("Eversolo [$player]: Failed '$command' to $target — $error$hint");
 }
 
 1;

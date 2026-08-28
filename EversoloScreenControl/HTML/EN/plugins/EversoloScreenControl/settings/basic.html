@@ -28,8 +28,10 @@
                 <input type="checkbox" name="auto_detect_ip" value="1"
                     [% IF prefs.auto_detect_ip %]checked="checked"[% END %] />
                 <span class="prefDesc">[% "PLUGIN_EVERSOLO_AUTO_IP_DESC" | string %]</span>
-                [% IF playerIP %]
-                    <br />[% "PLUGIN_EVERSOLO_IP_DETECTED" | string %] <b>[% playerIP | html %]</b>
+                [% IF playerBridged %]
+                    <br /><span class="prefDesc" style="font-weight:bold">[% "PLUGIN_EVERSOLO_IP_BRIDGED" | string %]</span>
+                [% ELSIF playerIP %]
+                    <br />[% "PLUGIN_EVERSOLO_IP_DETECTED" | string %] <span style="font-weight:bold">[% playerIP | html %]</span>
                 [% END %]
             </td>
         </tr>
@@ -39,8 +41,11 @@
             <td class="prefHead">[% "PLUGIN_EVERSOLO_IP" | string %]</td>
             <td class="prefBody">
                 <input type="text" name="eversolo_ip" value="[% prefs.eversolo_ip | html %]"
-                    size="20" placeholder="[% playerIP | html %]" />
+                    size="20" placeholder="192.168.1.50" />
                 <span class="prefDesc">[% "PLUGIN_EVERSOLO_IP_DESC" | string %]</span>
+                [% IF effectiveIP %]
+                    <br /><span class="prefDesc">[% "PLUGIN_EVERSOLO_IP_INUSE" | string %] <span style="font-weight:bold">[% effectiveIP | html %]</span></span>
+                [% END %]
             </td>
         </tr>
 

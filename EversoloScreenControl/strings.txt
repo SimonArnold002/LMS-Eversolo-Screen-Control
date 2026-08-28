@@ -14,7 +14,7 @@ PLUGIN_EVERSOLO_AUTO_IP
 	EN	Auto-detect Eversolo IP
 
 PLUGIN_EVERSOLO_AUTO_IP_DESC
-	EN	When ticked, the plugin uses this player's live IP address to reach the Eversolo (recommended). This means the plugin automatically follows IP changes from DHCP. Untick only if the Eversolo is at a different address from the player.
+	EN	When ticked, the plugin uses this player's live IP address to reach the Eversolo (recommended). This means the plugin automatically follows IP changes from DHCP. Bridged and virtual players (HQPlayer Bridge, player groups, UPnP bridges) have no address of their own, so for those the manual address below is used instead - leave this ticked.
 
 PLUGIN_EVERSOLO_IP_DETECTED
 	EN	Current player IP:
@@ -22,8 +22,14 @@ PLUGIN_EVERSOLO_IP_DETECTED
 PLUGIN_EVERSOLO_IP
 	EN	Manual Eversolo IP Address
 
+PLUGIN_EVERSOLO_IP_BRIDGED
+	EN	This is a bridged or virtual player, so LMS has no network address for the hardware and auto-detect has nothing to detect. Enter the Eversolo's IP address below.
+
 PLUGIN_EVERSOLO_IP_DESC
-	EN	Only used when auto-detect is off. Enter the Eversolo's IP address manually.
+	EN	Used when auto-detect is off, and as the fallback whenever auto-detect finds no real address (bridged and virtual players). Enter the Eversolo's IP address, e.g. 192.168.1.50.
+
+PLUGIN_EVERSOLO_IP_INUSE
+	EN	Commands are currently being sent to:
 
 PLUGIN_EVERSOLO_PORT
 	EN	Eversolo API Port

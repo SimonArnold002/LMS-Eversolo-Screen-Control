@@ -58,9 +58,17 @@ sub handler {
         # --- Auto-detect IP (checkbox, default on) ---
         $params->{'auto_detect_ip'} = $params->{'auto_detect_ip'} ? 1 : 0;
 
-        # --- Manual Eversolo IP (trim whitespace) ---
+        # --- Manual Eversolo IP ---
+        # Tolerate a pasted address bar: strip a scheme, any path, and lift a
+        # trailing :port into the port field rather than storing an address
+        # that can never resolve.
         my $ip = $params->{'eversolo_ip'} || '';
         $ip =~ s/^\s+|\s+$//g;
+        $ip =~ s{^\w+://}{};
+        $ip =~ s{/.*$}{};
+        if ($ip =~ s/:(\d+)$//) {
+            $params->{'eversolo_port'} = $1;
+        }
         $params->{'eversolo_ip'} = $ip;
 
         # --- Port (must be a valid number 1-65535, default 9529) ---
@@ -87,8 +95,16 @@ sub handler {
         $params->{'prefs'}->{'eversolo_port'}    = $prefs->client($client)->get('eversolo_port');
         $params->{'prefs'}->{'screen_off_delay'} = $prefs->client($client)->get('screen_off_delay');
 
-        # Pass the live player IP so the template can display it
-        $params->{'playerIP'} = $playerIP;
+        # Pass the live player IP so the template can display it, plus whether
+        # it is a real device address at all.  A bridged or virtual player
+        # (HQPlayer Bridge, Groups, a UPnP bridge) has no socket and reports a
+        # placeholder, so auto-detect has nothing to work with and the manual
+        # address below is the only way to reach the hardware.
+        $params->{'playerIP'}       = $playerIP;
+        $params->{'playerBridged'}  =
+            Plugins::EversoloScreenControl::Plugin::isPlaceholderIP($playerIP) ? 1 : 0;
+        $params->{'effectiveIP'}    =
+            Plugins::EversoloScreenControl::Plugin::_resolveIP($client) || '';
     }
 
     return $class->SUPER::handler($client, $params);

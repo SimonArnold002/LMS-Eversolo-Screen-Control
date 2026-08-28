@@ -65,11 +65,18 @@ You'll see these settings for the currently selected player:
 | Setting | Description | Default |
 |---|---|---|
 | **Enable Eversolo Screen Control** | Activate screen control for *this* player | Off |
-| **Eversolo IP Address** | IP of the DMP-A8 this player connects to | — |
+| **Auto-detect Eversolo IP** | Use the player's own live IP as the device address | On |
+| **Manual Eversolo IP Address** | IP of the DMP-A8 — used when auto-detect is off, and as the fallback when auto-detect finds no real address | — |
 | **Eversolo API Port** | HTTP control port | `9529` |
 | **Screen Off Delay (seconds)** | Wait time after pause/stop before screen off | `30` |
 
-Only players where **Enable** is ticked and an **IP** is entered will trigger Eversolo commands. All other players are ignored.
+Only players where **Enable** is ticked trigger Eversolo commands. All other players are ignored.
+
+### Bridged and virtual players
+
+Auto-detect works by assuming the player *is* the Eversolo, which is true for the Squeezelite running on the device itself. It is not true for a **bridged or virtual player** — HQPlayer Bridge, player groups, a UPnP bridge — because those have no SlimProto connection and so no network address of their own; LMS reports a placeholder (usually `127.0.0.1`, the server itself).
+
+For those players, enter the Eversolo's address in **Manual Eversolo IP Address**. Auto-detect can stay ticked: it falls back to the manual address whenever there is no real one to detect. The settings page says which address commands are actually being sent to.
 
 ### Finding your Eversolo's IP
 

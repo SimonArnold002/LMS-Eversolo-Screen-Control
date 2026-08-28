@@ -16,7 +16,7 @@ The plugin is **per-player**, not global. It appears in the **Player Settings**
 menu (alongside DSD Player, etc.) and is enabled/disabled independently for each
 LMS player. Players not attached to an Eversolo simply leave it off and are unaffected.
 
-**Current version: 1.0.2**
+**Current version: 1.1.0**
 
 ## How it works
 
@@ -41,13 +41,30 @@ LMS player. Players not attached to an Eversolo simply leave it off and are unaf
 
 ### IP resolution
 
-The Eversolo runs the Squeezelite player, so the player's IP **is** the Eversolo's IP.
+For a direct SlimProto player the Eversolo runs the Squeezelite, so the player's
+IP **is** the Eversolo's IP. That assumption is the whole of auto-detect, and it
+holds only for players with a real socket.
 
 - `auto_detect_ip` (per-player pref, **default on**): the live IP is resolved at
   command-send time via `$client->ip()` inside the `_resolveIP()` helper. This
   follows DHCP changes automatically — do not cache the IP at config time.
-- When `auto_detect_ip` is off, the manually entered `ip` pref is used instead
-  (for the rare case where the Eversolo is on a different address from the player).
+- When `auto_detect_ip` is off, the manually entered `eversolo_ip` pref is used.
+
+**Bridged / virtual players (critical).** A player with no SlimProto socket —
+HQPlayer Bridge, LMS-Groups, a UPnP bridge — reports whatever placeholder address
+its creator passed to the `Slim::Player::Client` constructor. HQPlayer Bridge
+passes `pack_sockaddr_in(0, INADDR_LOOPBACK)`, so `$client->ip()` is `127.0.0.1`
+and every command lands on the LMS server itself ("Connect timed out: Transport
+endpoint is not connected"). `isPlaceholderIP()` recognises loopback, `0.0.0.0`,
+`::`, `::1` and empty; when auto-detect hits one, `_resolveIP()` **falls back to
+the manual address**, so auto-detect can stay ticked on a bridged player. With no
+manual address set it still returns the detected one — on a server running *on*
+the Eversolo, loopback really is the device — and logs one actionable warning per
+player/address (`%warnedPlaceholder`).
+
+Do not "fix" this by detecting the bridge plugin, the player `model`, or
+`tcpsock`: bridges vary and several set `tcpsock(1)` precisely to look connected.
+Judge the address, not the player class.
 
 This live-resolution behaviour was the fix for the v1.0.1 bug, where a stored IP
 went stale after a DHCP lease change. **Keep IP resolution lazy.** Don't reintroduce
