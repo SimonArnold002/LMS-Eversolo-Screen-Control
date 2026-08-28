@@ -16,7 +16,7 @@ The plugin is **per-player**, not global. It appears in the **Player Settings**
 menu (alongside DSD Player, etc.) and is enabled/disabled independently for each
 LMS player. Players not attached to an Eversolo simply leave it off and are unaffected.
 
-**Current version: 1.2.1**
+**Current version: 1.3.0**
 
 ## How it works
 
@@ -103,6 +103,32 @@ server and is rejected.
 - Runs `STARTUP_SCAN_DELAY` (20s) after init, then every `RESCAN_INTERVAL`
   (1h), and on demand from the settings page's Scan button. The rescan timer is
   keyed on `undef` — one scan for the whole server, not one per player.
+
+### Reconcile pass (critical)
+
+The event subscription alone is **not sufficient**, and this was a real bug: the
+plugin could only turn a screen off in response to a stop it witnessed, so a
+stop it never saw left the screen on with nothing able to correct it. Three ways
+that happens: a stop across a server restart (`shutdownPlugin` kills the pending
+off-timer and the event is gone), a stop a bridged player never announced, and
+the screen state being lost with the process.
+
+`_reconcile()` runs `STARTUP_RECONCILE_DELAY` (15s) after init and every
+`RECONCILE_INTERVAL` (60s) after that. For each **enabled** player it compares
+`Slim::Player::Source::playmode()` against `%screenState` and repairs only a
+disagreement:
+
+- playing, screen off or unknown → assert ON
+- not playing, screen on or unknown → schedule the off-timer as a stop would
+- not playing, screen known off → nothing (one hash lookup, no traffic)
+
+A player **absent** from `%screenState` is UNKNOWN, not off — that is what makes
+the pass assert the screen after a restart instead of assuming it is right.
+
+`%offPending` exists because `Slim::Utils::Timers` has **no way to ask whether a
+timer is pending** (`killTimers` only reports what it removed). Without it the
+reconcile would stack a second off-timer on every pass. Set it in
+`_onPauseOrStop`, clear it in `_turnScreenOff` and in `_onPlay`.
 
 ## Per-player architecture (critical)
 

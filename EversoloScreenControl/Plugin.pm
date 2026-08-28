@@ -20,15 +20,32 @@ use Slim::Utils::Prefs;
 use Slim::Utils::Timers;
 use Slim::Networking::SimpleAsyncHTTP;
 
+# Both of these are always loaded by the server, so the calls below have always
+# resolved — but this module calls them itself (playmode, clients, getClient)
+# and so should say so rather than rely on someone else's require.
+use Slim::Player::Client;
+use Slim::Player::Source;
+
 use Plugins::EversoloScreenControl::Discovery;
 
-use constant PLUGIN_VERSION => '1.2.1';
+use constant PLUGIN_VERSION => '1.3.0';
 
 # Seconds after plugin init before the first network scan, and the interval
 # between scans after that.  A sweep is cheap and asynchronous, but there is
 # no reason for it to share the startup window with the server's own init.
 use constant STARTUP_SCAN_DELAY => 20;
 use constant RESCAN_INTERVAL    => 3600;
+
+# Events alone are not enough to keep the screen honest.  The plugin can only
+# turn a screen off in response to a stop it witnessed, so a stop it did not
+# see — one that happened across a server restart, or that a bridged player
+# never announced — would leave the screen on with nothing able to correct it.
+# The reconcile pass compares each enabled player's real state against what the
+# screen is believed to be doing and fixes any disagreement.  It reads LMS's
+# own state in-process and only ever sends a command when the two disagree, so
+# in the steady state it costs nothing and puts no traffic on the network.
+use constant STARTUP_RECONCILE_DELAY => 15;
+use constant RECONCILE_INTERVAL      => 60;
 
 my $log = Slim::Utils::Log->addLogCategory({
     'category'     => 'plugin.eversoloscreencontrol',
@@ -45,8 +62,17 @@ $prefs->setPlayerDefault('eversolo_ip',      '');
 $prefs->setPlayerDefault('eversolo_port',    9529);
 $prefs->setPlayerDefault('screen_off_delay', 30);
 
-# Per-player screen-state tracker  { client_id => 0|1 }
+# Per-player screen-state tracker  { client_id => 0|1 }.  A player absent from
+# this hash has an UNKNOWN screen state — which is exactly where every player
+# starts after a server restart, and why the reconcile pass asserts the screen
+# rather than assuming it is already right.
 my %screenState;
+
+# Players with an off-timer already scheduled { client_id => 1 }.  Slim::Utils::
+# Timers has no way to ask whether a timer is pending (killTimers only reports
+# what it removed), so the pending state is tracked here — the reconcile pass
+# must not stack a second off-timer on top of one that is already running.
+my %offPending;
 
 # Players already warned about a placeholder address (see _warnPlaceholder),
 # keyed id/address so a DHCP change or a re-created bridge player warns again.
@@ -90,6 +116,14 @@ sub initPlugin {
         undef, time() + STARTUP_SCAN_DELAY, \&_rescan,
     );
 
+    # Bring every enabled player's screen into line with what it is actually
+    # doing, then keep checking.  Without this a player that was stopped while
+    # the plugin was down keeps its screen on for ever: no further event is
+    # coming, because the stop already happened.
+    Slim::Utils::Timers::setTimer(
+        undef, time() + STARTUP_RECONCILE_DELAY, \&_reconcile,
+    );
+
     main::INFOLOG && $log->is_info && $log->info(
         'Eversolo Screen Control plugin initialised.'
     );
@@ -107,8 +141,10 @@ sub shutdownPlugin {
         Slim::Utils::Timers::killTimers($client, \&_turnScreenOff);
     }
     Slim::Utils::Timers::killTimers(undef, \&_rescan);
+    Slim::Utils::Timers::killTimers(undef, \&_reconcile);
 
     %screenState       = ();
+    %offPending        = ();
     %warnedPlaceholder = ();
 
     Slim::Control::Request::unsubscribe(\&_playbackCallback);
@@ -189,6 +225,62 @@ sub _resolveIP {
     }
 
     return '';
+}
+
+# ---------------------------------------------------------------------------
+#  Make every enabled player's screen match what that player is actually doing.
+#
+#  This is the safety net under the event subscription, and it is what makes a
+#  bridged player behave like a direct one.  Three cases it repairs:
+#
+#    - the plugin was down when the player stopped (a server restart), so the
+#      stop event is gone and no further one is coming;
+#    - the player stopped in a way that produced no notification the plugin
+#      recognised;
+#    - the screen state was lost with the process, leaving it unknown.
+#
+#  It acts only on disagreement: a stopped player whose screen is already off
+#  costs one hash lookup and sends nothing.
+# ---------------------------------------------------------------------------
+sub _reconcile {
+    for my $client ( Slim::Player::Client::clients() ) {
+
+        next unless $client;
+        next unless $prefs->client($client)->get('enabled');
+
+        my $id = $client->id() || next;
+
+        my $mode = Slim::Player::Source::playmode($client) || 'stop';
+
+        if ($mode eq 'play') {
+            # Playing but the screen is off or unknown — assert it on.
+            next if $screenState{$id};
+
+            main::INFOLOG && $log->is_info && $log->info(sprintf(
+                'Eversolo [%s]: reconcile — playing but screen not known to be on',
+                $client->name() || $id
+            ));
+
+            _onPlay($client, 0);
+        }
+        else {
+            # Not playing.  Known-off is the only state that needs nothing.
+            next if defined $screenState{$id} && !$screenState{$id};
+            next if $offPending{$id};
+
+            main::INFOLOG && $log->is_info && $log->info(sprintf(
+                'Eversolo [%s]: reconcile — %s but screen still %s',
+                $client->name() || $id, $mode,
+                defined $screenState{$id} ? 'on' : 'in an unknown state'
+            ));
+
+            _onPauseOrStop($client);
+        }
+    }
+
+    Slim::Utils::Timers::setTimer(
+        undef, time() + RECONCILE_INTERVAL, \&_reconcile,
+    );
 }
 
 # ---------------------------------------------------------------------------
@@ -278,6 +370,7 @@ sub _onPlay {
 
     # Cancel any pending screen-off timer for this player
     Slim::Utils::Timers::killTimers($client, \&_turnScreenOff);
+    delete $offPending{$id};
 
     # On a song change we ALWAYS re-send Screen.ON.  This resets the
     # Eversolo's own screensaver/screen-off timer so it never kicks in
@@ -333,6 +426,8 @@ sub _onPauseOrStop {
         time() + $delay,              # when
         \&_turnScreenOff,             # callback
     );
+
+    $offPending{$id} = 1;
 }
 
 # ---------------------------------------------------------------------------
@@ -343,6 +438,8 @@ sub _turnScreenOff {
     return unless $client && ref $client;
 
     my $id = $client->id();
+
+    delete $offPending{$id};
 
     # Safety: if playback has resumed in the meantime, bail out
     my $mode = Slim::Player::Source::playmode($client) || 'stop';
