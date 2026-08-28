@@ -22,7 +22,7 @@ use Slim::Networking::SimpleAsyncHTTP;
 
 use Plugins::EversoloScreenControl::Discovery;
 
-use constant PLUGIN_VERSION => '1.2.0';
+use constant PLUGIN_VERSION => '1.2.1';
 
 # Seconds after plugin init before the first network scan, and the interval
 # between scans after that.  A sweep is cheap and asynchronous, but there is

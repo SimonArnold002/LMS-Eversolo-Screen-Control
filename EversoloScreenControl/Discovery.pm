@@ -3,11 +3,18 @@ package Plugins::EversoloScreenControl::Discovery;
 # Finds Eversolo devices on the local network by asking the same HTTP control
 # API the plugin drives.  A device answers
 #
-#   http://<ip>:9529/ZidooControlCenter/getDeviceInfo
+#   http://<ip>:9529/ZidooControlCenter/getModel
 #
-# with a JSON body carrying status 200 and its model/name, so a responder on
-# that port IS an Eversolo (or a Zidoo box speaking the same API) — no vendor
-# discovery protocol, no extra modules, nothing to install on the server.
+# with a JSON body carrying status 200 plus model, net_mac, firmware and so on,
+# so a responder on that port IS an Eversolo (or a Zidoo box speaking the same
+# API) — no vendor discovery protocol, no extra modules, nothing to install on
+# the server.
+#
+# getModel is the identification call in Zidoo's own API and in the reference
+# client (wizmo2/zidoo-player); an earlier build here guessed at
+# "getDeviceInfo", which no firmware serves, so every probe 404'd and the scan
+# found nothing. Both paths live under the same ZidooControlCenter root as the
+# sendkey call the plugin already relies on.
 #
 # The sweep is entirely non-blocking: every probe is a SimpleAsyncHTTP request
 # with a short timeout, and only a handful are ever in flight at once, so the
@@ -23,6 +30,9 @@ use Slim::Networking::SimpleAsyncHTTP;
 
 my $log   = logger('plugin.eversoloscreencontrol');
 my $prefs = preferences('plugin.eversoloscreencontrol');
+
+# Zidoo's identification call: status 200 + model, net_mac, firmware, language.
+use constant PROBE_PATH    => '/ZidooControlCenter/getModel';
 
 # The device answers in milliseconds on a LAN; anything slower is not it.
 use constant PROBE_TIMEOUT => 2;
@@ -168,7 +178,7 @@ sub scan {
                     timeout => PROBE_TIMEOUT,
                     ip      => $ip,
                 },
-            )->get("http://${ip}:${port}/ZidooControlCenter/getDeviceInfo");
+            )->get("http://${ip}:${port}" . PROBE_PATH);
         }
 
         $finish->() if !$pending && !@queue;
@@ -185,13 +195,21 @@ sub scan {
 #  Parsed by hand rather than through a JSON module: the answer is a flat
 #  object and all we need from it is "did the control API answer" plus
 #  something to show the user in the picker.
+#
+#  Deliberately tolerant about the shape.  The documented answer is
+#  {"status":200,"model":"...","net_mac":"...",...}, but Eversolo's firmware is
+#  a fork of Zidoo's and the plugin cannot be rebuilt every time a field moves:
+#  a JSON body on this path from this port is the device, whatever else it
+#  says.  Anything that is not JSON is somebody else's web server and is
+#  rejected — the port is not exclusive.
 # ---------------------------------------------------------------------------
 sub _identify {
     my $body = shift or return;
 
-    return unless $body =~ /"status"\s*:\s*200/;
+    return unless $body =~ /^\s*\{/;                       # JSON object, or not ours
+    return if     $body =~ /"status"\s*:\s*(?!200)\d+/;    # answered, but not with success
 
-    for my $key (qw(name model device_name deviceName net_mac)) {
+    for my $key (qw(model name device_name deviceName)) {
         if ( $body =~ /"\Q$key\E"\s*:\s*"([^"]+)"/ ) {
             return $1;
         }

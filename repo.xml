@@ -3,13 +3,13 @@
     <title lang="EN">Eversolo Screen Control For Lyrion Music Server</title>
   </details>
   <plugins>
-    <plugin name="EversoloScreenControl" version="1.2.0" minTarget="8.0.0" maxTarget="*">
+    <plugin name="EversoloScreenControl" version="1.2.1" minTarget="8.0.0" maxTarget="*">
       <title lang="EN">Eversolo Screen Control</title>
       <desc lang="EN">Turns on and keeps display on whilst playing and turns off display when no music playing after 30sec</desc>
       <url>https://raw.githubusercontent.com/SimonArnold002/LMS-Eversolo-Screen-Control/dev/EversoloScreenControl.zip</url>
       <creator>CrystalGipsy</creator>
       <email></email>
-      <sha>4821d85a9bfd3b9f4e8e59624641ab25cf4cd96d</sha>
+      <sha>91361708a9be27c2f91b03beb6d0b3643d046e22</sha>
     </plugin>
   </plugins>
 </extensions>

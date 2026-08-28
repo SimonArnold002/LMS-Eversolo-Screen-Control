@@ -16,7 +16,7 @@ The plugin is **per-player**, not global. It appears in the **Player Settings**
 menu (alongside DSD Player, etc.) and is enabled/disabled independently for each
 LMS player. Players not attached to an Eversolo simply leave it off and are unaffected.
 
-**Current version: 1.2.0**
+**Current version: 1.2.1**
 
 ## How it works
 
@@ -33,11 +33,19 @@ LMS player. Players not attached to an Eversolo simply leave it off and are unaf
 
 ### Eversolo HTTP API
 
-- Protocol: HTTP GET, no auth.
-- Default port: **9529**.
-- Endpoint: `http://<IP>:9529/ZidooControlCenter/RemoteControl/sendkey?key=<COMMAND>`
-- Commands used: `Key.Screen.ON`, `Key.Screen.OFF`.
-  (This is the Zidoo remote-control API that Eversolo's firmware exposes.)
+Eversolo's firmware is a fork of Zidoo's, so it speaks the Zidoo control API.
+**Check that API before guessing at an endpoint** — the reference is Zidoo's own
+developer docs plus the open-source client `wizmo2/zidoo-player`. A guessed
+`getDeviceInfo` path shipped in 1.2.0 and 404'd on every device.
+
+- Protocol: HTTP GET, no auth (an optional `X-Auth-PSK` header exists; unused).
+- Default port: **9529**. Root: `/ZidooControlCenter/`.
+- **Send a key:** `RemoteControl/sendkey?key=<COMMAND>` → `{"status":200}`.
+  Commands used: `Key.Screen.ON`, `Key.Screen.OFF`.
+- **Identify a device:** `getModel` → `{"status":200,"model":"...",
+  "net_mac":"...","wif_mac":"...","firmware":"...","androidversion":"...",
+  "language":"...","ram":"...","flash":"..."}`. This is what the network scan
+  probes; `status` 200 plus `model` is the signature.
 
 ### Address resolution (critical)
 
@@ -75,9 +83,12 @@ was the v1.0.1 fix for a stored IP going stale after a DHCP lease change.
 ### Network scan (Discovery.pm)
 
 Finds Eversolos by asking the same control API the plugin drives:
-`GET http://<ip>:9529/ZidooControlCenter/getDeviceInfo` → JSON with
-`"status":200` and a model/name. A responder on that port IS the device, so
-there is no vendor discovery protocol to speak and nothing to install.
+`GET http://<ip>:9529/ZidooControlCenter/getModel` → JSON with `"status":200`
+and a model. A responder on that port IS the device, so there is no vendor
+discovery protocol to speak and nothing to install. Matching is deliberately
+loose (any JSON body that is not an explicit non-200) so a firmware that moves
+a field does not go undiscovered; a non-JSON answer is somebody else's web
+server and is rejected.
 
 - Candidates are the /24 around each of the server's own IPv4 addresses
   (`Slim::Utils::IPDetect::IP`, `Slim::Utils::Network::hostAddr`), loopback
