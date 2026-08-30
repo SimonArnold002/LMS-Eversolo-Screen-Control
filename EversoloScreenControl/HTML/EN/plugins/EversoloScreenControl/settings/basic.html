@@ -9,58 +9,44 @@
 
     <table class="prefTable" border="0" cellspacing="0" cellpadding="0">
 
-        <!-- Enable for this player -->
+        <!-- Enable for this player.  The checkbox is wrapped in a <label>
+             because Material Skin does not draw a bare one at all. -->
         <tr>
             <td class="prefHead">[% "PLUGIN_EVERSOLO_ENABLED" | string %]</td>
             <td class="prefBody">
-                <input type="hidden" name="enabled" value="0" />
-                <input type="checkbox" name="enabled" value="1"
+                <input type="hidden" name="pref_enabled" value="0" />
+                <label><input type="checkbox" name="pref_enabled" value="1"
                     [% IF prefs.enabled %]checked="checked"[% END %] />
+                    [% "PLUGIN_EVERSOLO_TICK" | string %]</label>
                 <span class="prefDesc">[% "PLUGIN_EVERSOLO_ENABLED_DESC" | string %]</span>
             </td>
         </tr>
 
-        <!-- Auto-detect IP -->
+        <!-- Drive the device's power from the player's power button. -->
         <tr>
-            <td class="prefHead">[% "PLUGIN_EVERSOLO_AUTO_IP" | string %]</td>
+            <td class="prefHead">[% "PLUGIN_EVERSOLO_POWER" | string %]</td>
             <td class="prefBody">
-                <input type="hidden" name="auto_detect_ip" value="0" />
-                <input type="checkbox" name="auto_detect_ip" value="1"
-                    [% IF prefs.auto_detect_ip %]checked="checked"[% END %] />
-                <span class="prefDesc">[% "PLUGIN_EVERSOLO_AUTO_IP_DESC" | string %]</span>
-                [% IF playerBridged %]
-                    <br /><span class="prefDesc" style="font-weight:bold">[% "PLUGIN_EVERSOLO_IP_BRIDGED" | string %]</span>
-                [% ELSIF playerIP %]
-                    <br />[% "PLUGIN_EVERSOLO_IP_DETECTED" | string %] <span style="font-weight:bold">[% playerIP | html %]</span>
+                <input type="hidden" name="pref_power_control" value="0" />
+                <label><input type="checkbox" name="pref_power_control" value="1"
+                    [% IF prefs.power_control %]checked="checked"[% END %] />
+                    [% "PLUGIN_EVERSOLO_TICK" | string %]</label>
+                <span class="prefDesc">[% "PLUGIN_EVERSOLO_POWER_DESC" | string %]</span>
+                [% IF prefs.power_control AND !deviceMAC %]
+                    <br /><span class="prefDesc" style="font-weight:bold">[% "PLUGIN_EVERSOLO_POWER_NOMAC" | string %]</span>
                 [% END %]
             </td>
         </tr>
 
-        <!-- Eversolo device: found on the network, or entered by hand -->
+        <!-- The Eversolo's address, and what the device says it is called. -->
         <tr>
             <td class="prefHead">[% "PLUGIN_EVERSOLO_IP" | string %]</td>
             <td class="prefBody">
-                <input type="text" name="eversolo_ip" value="[% prefs.eversolo_ip | html %]"
+                <input type="text" name="pref_eversolo_ip" value="[% prefs.eversolo_ip | html %]"
                     size="20" placeholder="192.168.1.50" />
-                <input type="submit" name="scanNow" value="[% "PLUGIN_EVERSOLO_SCAN" | string %]" />
+                [% IF deviceName %]
+                    <span style="font-weight:bold">[% deviceName | html %]</span>
+                [% END %]
                 <span class="prefDesc">[% "PLUGIN_EVERSOLO_IP_DESC" | string %]</span>
-
-                [% IF scanning %]
-                    <br /><span class="prefDesc">[% "PLUGIN_EVERSOLO_SCANNING" | string %]</span>
-                [% ELSIF foundDevices.size %]
-                    <br /><span class="prefDesc">[% "PLUGIN_EVERSOLO_SCAN_FOUND" | string %]</span>
-                    <ul style="margin:4px 0 0 18px; padding:0">
-                    [% FOREACH dev IN foundDevices %]
-                        <li><span style="font-weight:bold">[% dev.ip | html %]</span> — [% dev.name | html %]</li>
-                    [% END %]
-                    </ul>
-                [% ELSIF scanned %]
-                    <br /><span class="prefDesc">[% "PLUGIN_EVERSOLO_SCAN_NONE" | string %]</span>
-                [% END %]
-
-                [% IF effectiveIP %]
-                    <br /><span class="prefDesc">[% "PLUGIN_EVERSOLO_IP_INUSE" | string %] <span style="font-weight:bold">[% effectiveIP | html %]</span></span>
-                [% END %]
             </td>
         </tr>
 
@@ -68,7 +54,7 @@
         <tr>
             <td class="prefHead">[% "PLUGIN_EVERSOLO_PORT" | string %]</td>
             <td class="prefBody">
-                <input type="text" name="eversolo_port" value="[% prefs.eversolo_port | html %]"
+                <input type="text" name="pref_eversolo_port" value="[% prefs.eversolo_port | html %]"
                     size="6" placeholder="9529" />
                 <span class="prefDesc">[% "PLUGIN_EVERSOLO_PORT_DESC" | string %]</span>
             </td>
@@ -78,7 +64,7 @@
         <tr>
             <td class="prefHead">[% "PLUGIN_EVERSOLO_DELAY" | string %]</td>
             <td class="prefBody">
-                <input type="text" name="screen_off_delay" value="[% prefs.screen_off_delay | html %]"
+                <input type="text" name="pref_screen_off_delay" value="[% prefs.screen_off_delay | html %]"
                     size="6" placeholder="30" />
                 <span class="prefDesc">[% "PLUGIN_EVERSOLO_DELAY_DESC" | string %]</span>
             </td>

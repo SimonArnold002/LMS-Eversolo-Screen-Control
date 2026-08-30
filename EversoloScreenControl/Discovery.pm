@@ -1,5 +1,18 @@
 package Plugins::EversoloScreenControl::Discovery;
 
+# Talking to an Eversolo over its HTTP control API.
+#
+# There is no device DISCOVERY here and there must not be.  Two attempts at it
+# were removed on 2026-08-30: a /24 sweep (254 probes per subnet) took the
+# server off the network by flooding its ARP table, and the SSDP search that
+# replaced it was machinery for a problem the user does not have - the address
+# of the Eversolo is known, and is typed in once.  What this module does is ask
+# a device at a KNOWN address who it is and what it is doing.
+#
+# Every call is non-blocking (Slim::Networking::SimpleAsyncHTTP).  Never use a
+# blocking HTTP call - it will stall the LMS event loop.
+
+
 # Finds Eversolo devices on the local network by asking the same HTTP control
 # API the plugin drives.  A device answers
 #
@@ -27,6 +40,8 @@ use Slim::Utils::Log;
 use Slim::Utils::Prefs;
 use Slim::Utils::Timers;
 use Slim::Networking::SimpleAsyncHTTP;
+use Slim::Player::Client;
+
 
 my $log   = logger('plugin.eversoloscreencontrol');
 my $prefs = preferences('plugin.eversoloscreencontrol');
@@ -34,21 +49,11 @@ my $prefs = preferences('plugin.eversoloscreencontrol');
 # Zidoo's identification call: status 200 + model, net_mac, firmware, language.
 use constant PROBE_PATH    => '/ZidooControlCenter/getModel';
 
-# The device answers in milliseconds on a LAN; anything slower is not it.
+# These are hosts that have just answered a UPnP search, so they are up; a
+# couple of seconds is plenty for the one HTTP question asked of each.
 use constant PROBE_TIMEOUT => 2;
 
-# Probes in flight at once.  A /24 is 254 addresses, so this is the whole cost
-# of a sweep: ~13 rounds of 20, a couple of seconds, all of it asynchronous.
-use constant CONCURRENCY   => 20;
 
-# One sweep at a time, server-wide.  Everything that asks while a sweep is
-# running is parked and answered from that same result.
-my $SCANNING = 0;
-my @WAITING;
-
-# Discovered devices from the last sweep: { ip => name }
-my %FOUND;
-my $LAST_SCAN = 0;
 
 # ---------------------------------------------------------------------------
 #  Ask a device what IT thinks it is doing.
@@ -104,174 +109,222 @@ sub deviceState {
     return;
 }
 
-sub found     { return { %FOUND } }
-sub lastScan  { return $LAST_SCAN }
-sub isScanning{ return $SCANNING }
+
+
+
+
+
 
 # ---------------------------------------------------------------------------
-#  The addresses to probe.
+#  Who is at this address?
 #
-#  Derived from the server's own IPv4 address(es) as a /24, which is what a
-#  home network is in practice.  A device on a different subnet is out of
-#  reach of any sweep short of a routing table, and that is exactly what the
-#  manual address field is for.
+#  GET /ZidooControlCenter/getModel, which is Zidoo's identification call and
+#  the one the plugin has always used to confirm a device is what it claims.
+#  $cb->($rec) with a record, or $cb->(undef) if nothing there answered it.
+#
+#  A DMP-A8 on firmware v1.5.75 answers:
+#
+#    {"status":200,"model":"DMP-A8","deviceName":"ManCave",
+#     "net_mac":"80:0a:80:5e:2b:7b","ableRemoteBoot":true, ...}
+#
+#  deviceName is the point of this call for the settings page: it is the name
+#  the user gave the box on the box itself, so the page can say which device it
+#  is talking to rather than echoing an address back at them.
 # ---------------------------------------------------------------------------
-sub _candidates {
-    my @nets;
+sub identify {
+    my ($ip, $port, $cb) = @_;
 
-    for my $addr ( _serverAddresses() ) {
-        next unless $addr =~ /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/;
-        next if $1 == 127;
-        my $net = "$1.$2.$3";
-        push @nets, $net unless grep { $_ eq $net } @nets;
-    }
+    return $cb->(undef) unless $ip;
+    $port ||= 9529;
 
-    my @hosts;
-    for my $net (@nets) {
-        push @hosts, map { "$net.$_" } ( 1 .. 254 );
-    }
+    Slim::Networking::SimpleAsyncHTTP->new(
+        sub {
+            $cb->( _identify( shift->content, $ip ) );
+        },
+        sub {
+            my (undef, $error) = @_;
+            main::INFOLOG && $log->is_info && $log->info(
+                "Eversolo: $ip did not answer getModel - " . ( $error || 'no answer' ));
+            $cb->(undef);
+        },
+        { timeout => PROBE_TIMEOUT },
+    )->get("http://${ip}:${port}" . PROBE_PATH);
 
-    return @hosts;
+    return;
 }
 
-sub _serverAddresses {
-    my @addrs;
+# The name to show for a device: what it calls itself, and its model.
+sub describe {
+    my $rec = shift or return '';
 
-    # Slim::Utils::IPDetect is the one LMS itself uses to answer "what address
-    # do players reach me on"; hostAddr covers a multi-homed server.
-    eval {
-        require Slim::Utils::IPDetect;
-        my $ip = Slim::Utils::IPDetect::IP();
-        push @addrs, $ip if $ip;
-    };
+    my $model = $rec->{'model'} || 'Eversolo';
+    my $name  = $rec->{'name'};
 
-    eval {
-        require Slim::Utils::Network;
-        push @addrs, Slim::Utils::Network::hostAddr();
-    };
-
-    my %seen;
-    return grep { $_ && !$seen{$_}++ } @addrs;
+    return $name ? "$model ($name)" : $model;
 }
 
 # ---------------------------------------------------------------------------
-#  Sweep the network.  $cb->(\%found) when it finishes.
+#  Power.
 #
-#  Single-flight: a second caller during a sweep gets the first sweep's result
-#  rather than starting another one — a settings page reload should never put
-#  a second 254-probe pass on the wire.
+#  Eversolo's firmware adds a power group on top of Zidoo's API.  Asking the
+#  DMP-A8 (firmware v1.5.75) what it can do:
+#
+#    GET /ZidooMusicControl/v2/getPowerOption
+#    -> {"status":200,"data":[{"name":"Power off","tag":"poweroff"},
+#                             {"name":"Reboot","tag":"reboot"},
+#                             {"name":"Screen off","tag":"screen"},
+#                             {"name":"Timed shutdown","tag":"timeshutdown"}]}
+#
+#  so powering DOWN is one HTTP call.  Powering UP cannot be: the device is off
+#  and nothing is listening on 9529.  That is what the Wake-on-LAN packet in
+#  Plugin.pm is for, and why getModel's net_mac is worth keeping.
 # ---------------------------------------------------------------------------
-sub scan {
-    my ($cb) = @_;
+sub setPowerOption {
+    my ($ip, $port, $tag, $cb) = @_;
 
-    if ($SCANNING) {
-        push @WAITING, $cb if $cb;
-        return;
-    }
+    return unless $ip && $tag;
+    $port ||= 9529;
 
-    my @queue = _candidates();
+    $cb ||= sub { };
 
-    if (!@queue) {
-        $log->warn('Eversolo: could not work out the local subnet, so there is nothing to scan — set the address manually');
-        $cb->({}) if $cb;
-        return;
-    }
+    Slim::Networking::SimpleAsyncHTTP->new(
+        sub { $cb->(1) },
+        sub {
+            my (undef, $error) = @_;
 
-    $SCANNING = 1;
-    push @WAITING, $cb if $cb;
-
-    my %found;
-    my $port    = $prefs->get('scan_port') || 9529;
-    my $pending = 0;
-    my $step;
-
-    main::INFOLOG && $log->is_info && $log->info(
-        sprintf('Eversolo: scanning %d addresses on port %d for Eversolo devices', scalar(@queue), $port)
-    );
-
-    my $finish = sub {
-        %FOUND     = %found;
-        $LAST_SCAN = time();
-        $SCANNING  = 0;
-
-        my $n = scalar keys %found;
-        if ($n) {
-            $log->info(sprintf('Eversolo: scan found %d device(s): %s',
-                $n, join(', ', map { "$_ ($found{$_})" } sort keys %found)));
-        }
-        else {
-            $log->info('Eversolo: scan found no devices answering the Eversolo control API');
-        }
-
-        my @cbs = @WAITING;
-        @WAITING = ();
-        $_->({ %found }) for grep { $_ } @cbs;
-    };
-
-    $step = sub {
-        while ( $pending < CONCURRENCY && @queue ) {
-            my $ip = shift @queue;
-            $pending++;
-
-            Slim::Networking::SimpleAsyncHTTP->new(
-                sub {
-                    my $http = shift;
-                    my $name = _identify( $http->content );
-                    $found{ $http->params('ip') } = $name if $name;
-                    $pending--;
-                    $step->();
-                },
-                sub {
-                    # Every address that is not a device lands here.  That is
-                    # the normal case for 253 of 254 probes, so it must stay
-                    # silent — no logging, no retry.
-                    $pending--;
-                    $step->();
-                },
-                {
-                    timeout => PROBE_TIMEOUT,
-                    ip      => $ip,
-                },
-            )->get("http://${ip}:${port}" . PROBE_PATH);
-        }
-
-        $finish->() if !$pending && !@queue;
-    };
-
-    $step->();
+            # The device pulls the power on itself the moment it accepts this,
+            # so a dropped connection IS the success case as often as not.
+            main::INFOLOG && $log->is_info && $log->info(
+                "Eversolo: $ip did not answer setPowerOption($tag) - " . ( $error || 'no answer' ));
+            $cb->(0);
+        },
+        { timeout => PROBE_TIMEOUT },
+    )->get("http://${ip}:${port}/ZidooMusicControl/v2/setPowerOption?tag=${tag}");
 
     return;
 }
 
 # ---------------------------------------------------------------------------
-#  Is this response an Eversolo?  Returns a display name, or undef.
+#  MAC handling.
+#
+#  Devices and users write a MAC every way there is - colons, dashes, upper or
+#  lower case - and the stored form has to match the discovered form exactly or
+#  a picked device silently stops resolving.  So there is ONE canonical form,
+#  twelve lower-case hex digits, and everything goes through here: what is
+#  parsed off the wire, what is saved from the settings page, and what is read
+#  back to compare.  Anything that is not twelve hex digits is not a MAC and
+#  comes back empty rather than half-normalised.
+# ---------------------------------------------------------------------------
+sub normaliseMac {
+    my $mac = shift;
+
+    return '' unless defined $mac;
+
+    $mac = lc $mac;
+    $mac =~ s/[^0-9a-f]//g;
+
+    return length($mac) == 12 ? $mac : '';
+}
+
+
+
+
+
+# ---------------------------------------------------------------------------
+#  Finding devices: ASK, don't sweep.
+#
+#  This used to walk the whole /24 - 254 HTTP probes per subnet.  That is a
+#  hostile thing to do to a network, and it took down the server it was meant
+#  to be helping: probing addresses where nothing exists makes the kernel ARP
+#  for every one of them, and a few hundred unresolved neighbour entries is
+#  enough to wedge a box's networking.  LMS went unreachable and had to be
+#  restarted.  Do not reintroduce a sweep, however gentle the concurrency looks.
+#
+#  It was never necessary.  The Eversolo is a UPnP MediaRenderer and answers an
+#  SSDP M-SEARCH like everything else on the network:
+#
+#    LOCATION: http://192.168.1.197:1212/description.xml
+#    SERVER:   UPnP/1.0 DLNADOC/1.50 Platinum/1.0.5.13
+#    <friendlyName>DMP-A8(ManCave)</friendlyName> <manufacturer>EVERSOLO</...>
+#
+#  So: one multicast datagram, a couple of seconds of listening, and the answer
+#  is a handful of addresses (14 on the network this was built against) rather
+#  than 254 guesses.  Each responder is then asked getModel - the same proof as
+#  before, that a device is only a device if the control API answers - just
+#  asked of the few addresses that spoke up.
+#
+#  This also removes the whole question of "which subnet are we on", which is
+#  what broke discovery before: multicast goes where it goes, and nothing has
+#  to work out the server's own address (which can be 127.0.0.1 - see the notes
+#  in CLAUDE.md).
+# ---------------------------------------------------------------------------
+
+
+
+
+
+
+# ---------------------------------------------------------------------------
+#  Is this response an Eversolo?  Returns a device record, or undef.
 #
 #  Parsed by hand rather than through a JSON module: the answer is a flat
-#  object and all we need from it is "did the control API answer" plus
-#  something to show the user in the picker.
+#  object and everything wanted from it is a scalar one regex away.
 #
 #  Deliberately tolerant about the shape.  The documented answer is
 #  {"status":200,"model":"...","net_mac":"...",...}, but Eversolo's firmware is
 #  a fork of Zidoo's and the plugin cannot be rebuilt every time a field moves:
 #  a JSON body on this path from this port is the device, whatever else it
 #  says.  Anything that is not JSON is somebody else's web server and is
-#  rejected — the port is not exclusive.
+#  rejected - the port is not exclusive.  By the same rule every field below is
+#  optional; a record with nothing but an address still identifies a device the
+#  user can pick, it just has less to say about it.
 # ---------------------------------------------------------------------------
 sub _identify {
-    my $body = shift or return;
+    my ($body, $ip) = @_;
 
+    return unless $body;
     return unless $body =~ /^\s*\{/;                       # JSON object, or not ours
     return if     $body =~ /"status"\s*:\s*(?!200)\d+/;    # answered, but not with success
 
-    for my $key (qw(model name device_name deviceName)) {
+    my %rec = ( ip => $ip );
+
+    # What the device calls itself: DMP-A8, DMP-A6, and so on.
+    for my $key (qw(model modelName device_model)) {
         if ( $body =~ /"\Q$key\E"\s*:\s*"([^"]+)"/ ) {
-            return $1;
+            $rec{model} = $1;
+            last;
         }
     }
 
+    # A user-set name, if this firmware serves one.  Zidoo's documented getModel
+    # does not, so this will usually be empty and describe() falls through to an
+    # LMS player at the same address - but the field costs one regex to look for
+    # and is the best label there is when a network holds two of the same model.
+    for my $key (qw(deviceName device_name friendlyName name)) {
+        if ( $body =~ /"\Q$key\E"\s*:\s*"([^"]+)"/ ) {
+            $rec{name} = $1;
+            last;
+        }
+    }
+
+    # The wired MAC.  This is the identity a picked device is remembered by, and
+    # it is also the address a Wake-on-LAN packet has to be sent to, so it is
+    # worth capturing even though nothing wakes the device today.
+    if ( $body =~ /"net_mac"\s*:\s*"([^"]*)"/ ) {
+        $rec{mac} = normaliseMac($1);
+    }
+
+    # The device's own word on whether it can be booted over the network.
+    if ( $body =~ /"ableRemoteBoot"\s*:\s*(true|false|\d+)/ ) {
+        my $v = $1;
+        $rec{remoteBoot} = ( $v eq 'false' || $v eq '0' ) ? 0 : 1;
+    }
+
     # Answered the control API but named itself nothing we recognise.  Still a
-    # device — the address is what matters.
-    return 'Eversolo';
+    # device - the address is what matters.
+    $rec{model} ||= 'Eversolo';
+
+    return \%rec;
 }
 
 1;

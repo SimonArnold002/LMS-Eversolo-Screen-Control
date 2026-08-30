@@ -7,6 +7,7 @@ A **per-player** plugin for Lyrion Music Server (LMS) that controls the screen o
 - **Screen ON** — instantly when music starts playing on a player with the feature enabled.
 - **Screen ON refresh** — re-sent on every song change, which resets the Eversolo's own screensaver timer so it never kicks in during continuous playback.
 - **Screen OFF** — after a configurable delay (default 30 s) when playback pauses or stops.
+- **Power OFF / ON** — optional. The player's own power button shuts the Eversolo down, and wakes it again with Wake-on-LAN.
 
 The plugin is **per-player**: it appears in the **Player Settings** menu (alongside DSD Player, etc.) and can be independently enabled or disabled for each player in LMS. Players that aren't connected to an Eversolo simply leave it disabled — they're completely unaffected.
 
@@ -65,23 +66,32 @@ You'll see these settings for the currently selected player:
 | Setting | Description | Default |
 |---|---|---|
 | **Enable Eversolo Screen Control** | Activate screen control for *this* player | Off |
-| **Eversolo IP Address** | The Eversolo this player feeds. Empty = use the device found by the network scan | — |
-| **Scan** | Look for Eversolos on the network now | — |
-| **Auto-detect Eversolo IP** | Last resort: use the player's own IP (only right when the player runs on the Eversolo) | On |
+| **Control Eversolo power** | Also drive the Eversolo's power from the player's power button | Off |
+| **Eversolo IP Address** | The address of the Eversolo this player feeds | — |
 | **Eversolo API Port** | HTTP control port | `9529` |
 | **Screen Off Delay (seconds)** | Wait time after pause/stop before screen off | `30` |
 
 Only players where **Enable** is ticked trigger Eversolo commands. All other players are ignored.
 
-### It finds the Eversolo for you
+### You tell it where the Eversolo is
 
-The plugin sweeps the local network for devices answering the Eversolo control API and uses what it finds, so in the common case there is nothing to configure: tick Enable and play something.
+Type the Eversolo's IP address into **Eversolo IP Address** and save. That is the whole of the setup.
 
-The address is resolved in this order:
+There is no network scan. Two were tried and both removed: a sweep of the local subnet, which floods the ARP table and can take the server off the network, and an SSDP search, which was a lot of machinery for a problem nobody has — you know the address, and typing it once is less work than any of it.
 
-1. **The address you set** — always wins. Set it to pin one particular Eversolo.
-2. **A device found by the scan** — used outright when there's exactly one. With several, the settings page lists them and you pick.
-3. **The player's own IP** — only when *Auto-detect* is on and the player really is the Eversolo (its own Squeezelite).
+What the plugin does do with the address is ask the device who it is, so the settings page can show you **DMP-A8 (ManCave)** beside the box rather than echoing the address back. That answer arrives asynchronously, so it appears the next time you open the page.
+
+### Powering the Eversolo on and off
+
+Tick **Control Eversolo power** and the player's power button in LMS drives the device itself:
+
+- **Off** — an HTTP `setPowerOption?tag=poweroff`, the same shutdown the Eversolo's own app sends.
+- **On** — a Wake-on-LAN magic packet, because a device that is off cannot answer HTTP.
+
+Two things follow from that, and both are worth knowing before you tick the box:
+
+- **Wake-on-LAN is wired-only.** Over Wi-Fi the Eversolo's network interface is not listening while it is off, so it will power down and not come back. Use Ethernet.
+- **The MAC address is learned while the device is on.** The plugin reads it from the device the first time it identifies it, because by the time it needs waking it is too late to ask. So open the settings page once with the Eversolo switched on; if the MAC isn't known yet, the page says so.
 
 ### Bridged and virtual players
 
@@ -120,19 +130,32 @@ Timer fires (and player is still paused/stopped)
 
 Music resumes before timer fires
     → timer is cancelled, screen stays on
+
+Player powered off      (only with "Control Eversolo power")
+    → send setPowerOption?tag=poweroff to Eversolo
+
+Player powered on       (only with "Control Eversolo power")
+    → broadcast a Wake-on-LAN magic packet to the Eversolo's MAC
 ```
 
 All HTTP requests use LMS's `Slim::Networking::SimpleAsyncHTTP` (non-blocking), so they never interrupt audio playback.
 
-The Eversolo API endpoint used:
+The Eversolo API endpoints used:
 
 ```
 http://<IP>:9529/ZidooControlCenter/RemoteControl/sendkey?key=<COMMAND>
+http://<IP>:9529/ZidooMusicControl/v2/setPowerOption?tag=poweroff
+http://<IP>:9529/ZidooControlCenter/getModel          (name, MAC, model)
+http://<IP>:9529/ZidooMusicControl/v2/getState        (what the device is really doing)
 ```
+
+Wake-on-LAN is not an HTTP call: it is a UDP magic packet broadcast to ports 9 and 7.
 
 ---
 
 ## Eversolo HTTP API — Full command reference
+
+This is the device's own remote-key list, recorded here for reference. It is **not** a list of what the plugin does — the plugin sends only `Key.Screen.ON` and `Key.Screen.OFF`, and (for power off) `setPowerOption`, which is a different endpoint from `Key.Poweroff` and the one the Eversolo app itself uses.
 
 | Key | Function |
 |---|---|
@@ -160,6 +183,13 @@ http://<IP>:9529/ZidooControlCenter/RemoteControl/sendkey?key=<COMMAND>
 - Verify the API manually — paste this in a browser:
   `http://<EVERSOLO_IP>:9529/ZidooControlCenter/RemoteControl/sendkey?key=Key.Screen.OFF`
   If the screen turns off, the API works.
+
+**Power on does nothing:**
+- The Eversolo must be on **wired Ethernet** — Wake-on-LAN cannot reach it over Wi-Fi.
+- The plugin needs the device's MAC, which it can only read while the device is on. Switch the Eversolo on, open the player's Eversolo settings page once, and the MAC is learned and stored.
+
+**Settings save but nothing changes:**
+- LMS loads plugin code at startup only, so a new version needs a restart. If a copy is also installed from the plugin repository, that copy shadows a manually installed one — uninstall it and reinstall so only one copy is present.
 
 **Check logs:**
 - Enable debug logging: *LMS → Settings → Advanced → Logging* → set `plugin.eversoloscreencontrol` to DEBUG.

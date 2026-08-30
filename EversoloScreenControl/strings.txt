@@ -10,38 +10,23 @@ PLUGIN_EVERSOLO_ENABLED
 PLUGIN_EVERSOLO_ENABLED_DESC
 	EN	Tick to activate screen control for this player. Leave unticked for players that are not connected to an Eversolo.
 
-PLUGIN_EVERSOLO_AUTO_IP
-	EN	Auto-detect Eversolo IP
+PLUGIN_EVERSOLO_TICK
+	EN	Enabled
 
-PLUGIN_EVERSOLO_AUTO_IP_DESC
-	EN	A last resort only, for a Squeezelite running on the Eversolo itself: use the player's own live IP as the device address. The address below, and any device found on the network, both take priority - so this can be left ticked and ignored.
+PLUGIN_EVERSOLO_POWER
+	EN	Control Eversolo power
 
-PLUGIN_EVERSOLO_IP_DETECTED
-	EN	Current player IP:
+PLUGIN_EVERSOLO_POWER_DESC
+	EN	Turn the Eversolo off and on with this player's power button. Powering OFF is sent over the network; powering ON is a Wake-on-LAN packet, which the Eversolo only accepts on its WIRED network port and with WOL enabled on the device. Leave this off unless this player feeds the Eversolo - a stray power-off costs a full cold boot.
+
+PLUGIN_EVERSOLO_POWER_NOMAC
+	EN	The device's hardware address is not known yet, so it cannot be woken. Open this page once while the Eversolo is switched ON and it will be learned automatically.
 
 PLUGIN_EVERSOLO_IP
 	EN	Eversolo IP Address
 
-PLUGIN_EVERSOLO_IP_BRIDGED
-	EN	This player is bridged or virtual, so it has no address of its own - which does not matter: the Eversolo is reached at its own address below, found by the network scan or entered by hand.
-
 PLUGIN_EVERSOLO_IP_DESC
-	EN	The address of the Eversolo this player feeds. Leave it empty to use the device found by the network scan; set it to pin one particular Eversolo, which always wins. Press Scan to look for Eversolos on the network.
-
-PLUGIN_EVERSOLO_SCAN
-	EN	Scan
-
-PLUGIN_EVERSOLO_SCANNING
-	EN	Scanning the network for Eversolo devices - reload this page in a few seconds to see what it found.
-
-PLUGIN_EVERSOLO_SCAN_FOUND
-	EN	Eversolo devices found on the network:
-
-PLUGIN_EVERSOLO_SCAN_NONE
-	EN	The last scan found no Eversolo answering the control API. Check the device is awake and on this subnet, then Scan again - or enter its address by hand.
-
-PLUGIN_EVERSOLO_IP_INUSE
-	EN	Commands are currently being sent to:
+	EN	The address of the Eversolo this player drives. Find it on the device: Settings > About. Give it a fixed address on your router so it cannot change. The name of the device appears here once it has been asked - the player's own address is irrelevant, so a player fed through a bridge works exactly the same way.
 
 PLUGIN_EVERSOLO_PORT
 	EN	Eversolo API Port

@@ -20,6 +20,9 @@ use Slim::Utils::Prefs;
 use Slim::Utils::Timers;
 use Slim::Networking::SimpleAsyncHTTP;
 
+use IO::Socket::INET;
+use Socket ();
+
 # Both of these are always loaded by the server, so the calls below have always
 # resolved — but this module calls them itself (playmode, clients, getClient)
 # and so should say so rather than rely on someone else's require.
@@ -28,13 +31,12 @@ use Slim::Player::Source;
 
 use Plugins::EversoloScreenControl::Discovery;
 
-use constant PLUGIN_VERSION => '1.4.0';
+use constant PLUGIN_VERSION => '2.1.1';
 
-# Seconds after plugin init before the first network scan, and the interval
-# between scans after that.  A sweep is cheap and asynchronous, but there is
-# no reason for it to share the startup window with the server's own init.
-use constant STARTUP_SCAN_DELAY => 20;
-use constant RESCAN_INTERVAL    => 3600;
+# There is no network scan and there must not be one. A /24 sweep took the
+# server off the network (it ARP-floods the box), and the SSDP search that
+# briefly replaced it was machinery for a problem that does not exist: the
+# Eversolo's address is typed in once, on the player's settings page.
 
 # Events alone are not enough to keep the screen honest.  The plugin can only
 # turn a screen off in response to a stop it witnessed, so a stop it did not
@@ -57,8 +59,22 @@ my $prefs = preferences('plugin.eversoloscreencontrol');
 
 # Per-player defaults (applied the first time a player is seen)
 $prefs->setPlayerDefault('enabled',          0);
-$prefs->setPlayerDefault('auto_detect_ip',   1);
+
+# The address of the Eversolo this player drives.  This is the ONLY thing that
+# says which device a player talks to.  The settings page fills it in from the
+# network scan, or the user types it in; either way what is stored is an
+# address, and nothing else has to be consulted to use it.
 $prefs->setPlayerDefault('eversolo_ip',      '');
+
+# Drive the Eversolo's power from the LMS player's power button.  OFF by
+# default and deliberately so: a mis-fire costs a full cold boot, so this is
+# something you turn on for the one player that feeds the device.
+$prefs->setPlayerDefault('power_control',    0);
+
+# The device's wired MAC, learned from getModel by the settings page.  Powering
+# ON cannot be an HTTP call - the device is off and nothing is listening - so
+# the only way up is a Wake-on-LAN packet addressed to this.
+$prefs->setPlayerDefault('eversolo_mac',     '');
 $prefs->setPlayerDefault('eversolo_port',    9529);
 $prefs->setPlayerDefault('screen_off_delay', 30);
 
@@ -80,10 +96,10 @@ my %offPending;
 # what triggers the one and only call the plugin makes to the device itself.
 my %lastElapsed;
 
-# Players already warned about a placeholder address (see _warnPlaceholder),
-# keyed id/address so a DHCP change or a re-created bridge player warns again.
-# Declared up here because shutdownPlugin clears it, and a lexical has to be
-# in scope textually before the sub that uses it is compiled.
+# Players already warned about having no address set (see _warnNoAddress), so
+# the warning is said once per player rather than once per track.  Declared up
+# here because shutdownPlugin clears it, and a lexical has to be in scope
+# textually before the sub that uses it is compiled.
 my %warnedPlaceholder;
 
 sub getDisplayName {
@@ -114,13 +130,8 @@ sub initPlugin {
         [['playlist'], ['newsong', 'play', 'pause', 'stop', 'jump']],
     );
 
-    # Find the Eversolos on the network.  Deferred past startup so the sweep
-    # never competes with the server's own init, then repeated slowly so a
-    # device that was off at boot, or that moved on a new DHCP lease, is
-    # picked up without anyone touching the settings page.
-    Slim::Utils::Timers::setTimer(
-        undef, time() + STARTUP_SCAN_DELAY, \&_rescan,
-    );
+    # The player's power button, for players that opted into power control.
+    Slim::Control::Request::subscribe( \&_powerCallback, [['power']] );
 
     # Bring every enabled player's screen into line with what it is actually
     # doing, then keep checking.  Without this a player that was stopped while
@@ -146,7 +157,6 @@ sub shutdownPlugin {
         my $client = Slim::Player::Client::getClient($id) || next;
         Slim::Utils::Timers::killTimers($client, \&_turnScreenOff);
     }
-    Slim::Utils::Timers::killTimers(undef, \&_rescan);
     Slim::Utils::Timers::killTimers(undef, \&_reconcile);
 
     %screenState       = ();
@@ -155,84 +165,10 @@ sub shutdownPlugin {
     %warnedPlaceholder = ();
 
     Slim::Control::Request::unsubscribe(\&_playbackCallback);
+    Slim::Control::Request::unsubscribe(\&_powerCallback);
 }
 
-# ---------------------------------------------------------------------------
-#  Is this address something that could be an Eversolo out on the network?
-#
-#  Auto-detect assumes the player IS the Eversolo, which holds for a
-#  Squeezelite talking SlimProto from the device itself.  It does NOT hold for
-#  a bridged or virtual player (HQPlayer Bridge, LMS-Groups, UPnP bridges):
-#  those have no socket, so LMS reports whatever placeholder address their
-#  creator handed the constructor.  HQPlayer Bridge passes INADDR_LOOPBACK, so
-#  the player answers 127.0.0.1 and every command goes to the LMS server
-#  itself -- "Connect timed out: Transport endpoint is not connected".
-#
-#  Called from PlayerSettings too, to flag the same case in the UI.
-# ---------------------------------------------------------------------------
-sub isPlaceholderIP {
-    my $ip = shift;
 
-    return 1 if !defined $ip || $ip eq '';
-    return 1 if $ip =~ /^127\./;                 # loopback
-    return 1 if $ip eq '0.0.0.0' || $ip eq '::' || $ip eq '::1';
-
-    return 0;
-}
-
-# ---------------------------------------------------------------------------
-#  Resolve the Eversolo address for a given player.
-#
-#  The Eversolo's address is a property of the DEVICE, not of the player: the
-#  plugin is configured on whatever player feeds that Eversolo, and the player
-#  may be a bridge sitting anywhere on the network.  So the address configured
-#  for this player always wins, and the player's own IP is only ever a
-#  convenience for the one case where they happen to be the same box.
-#
-#  The ladder:
-#    1. the address configured for this player  — always wins
-#    2. a device found by the network scan      — one match, used outright
-#    3. the player's own IP                     — only when auto-detect is on
-#                                                  and it is a real address
-#                                                  (a Squeezelite running on
-#                                                  the Eversolo itself)
-# ---------------------------------------------------------------------------
-sub _resolveIP {
-    my $client = shift;
-
-    my $cprefs = $prefs->client($client);
-
-    # 1. Configured address. Hardcode it and nothing else is consulted.
-    my $manual = $cprefs->get('eversolo_ip') || '';
-    $manual =~ s/^\s+|\s+$//g;
-    return $manual if $manual ne '';
-
-    # 2. Discovered device. With exactly one Eversolo on the network there is
-    #    nothing to choose between, so use it — this is what makes a bridged
-    #    player work with no configuration at all. With several, the settings
-    #    page asks which one rather than guessing.
-    my $found = Plugins::EversoloScreenControl::Discovery::found();
-    my @ips   = sort keys %$found;
-
-    if (@ips == 1) {
-        return $ips[0];
-    }
-    elsif (@ips > 1) {
-        _warnAmbiguous($client, \@ips);
-    }
-
-    # 3. The player itself, when it really is the device.
-    if ($cprefs->get('auto_detect_ip')) {
-        my $ip = $client->ip() || '';
-        $ip =~ s/:.*$//;   # strip port if present
-
-        return $ip unless isPlaceholderIP($ip);
-
-        _warnPlaceholder($client, $ip, scalar(@ips));
-    }
-
-    return '';
-}
 
 # ---------------------------------------------------------------------------
 #  Make every enabled player's screen match what that player is actually doing.
@@ -364,45 +300,175 @@ sub _askDevice {
 }
 
 # ---------------------------------------------------------------------------
-#  Periodic network scan.
+#  Which Eversolo does this player drive?
 #
-#  Timers hand the keyed object back as the first argument (setTimer($obj, ...)
-#  calls $cb->($obj, @args)), so the leading undef here is the key, not a
-#  mistake — this timer is keyed on nothing because there is one scan for the
-#  whole server, not one per player.
+#  The stored address, and nothing else.
+#
+#  This used to be a four-rung ladder that could fall back to the PLAYER's own
+#  IP address, on the theory that a Squeezelite might be running on the Eversolo
+#  itself.  That was wrong in the case that actually matters: a player fed
+#  through a bridge reports whatever placeholder its creator passed in --
+#  HQPlayer Bridge reports 127.0.0.1 -- so every command went to the LMS server
+#  instead of to an Eversolo.  The Eversolo's address is a property of the
+#  DEVICE, and the player's own address is never evidence of it, so it is not
+#  consulted at all any more.  The settings page discovers the address and
+#  writes it here; this reads it back.
 # ---------------------------------------------------------------------------
-sub _rescan {
-    Plugins::EversoloScreenControl::Discovery::scan(sub {
-        Slim::Utils::Timers::setTimer(
-            undef, time() + RESCAN_INTERVAL, \&_rescan,
+sub _resolveIP {
+    my $client = shift or return '';
+
+    my $ip = $prefs->client($client)->get('eversolo_ip');
+    $ip = '' unless defined $ip;
+    $ip =~ s/^\s+|\s+$//g;
+
+    _warnNoAddress($client) if $ip eq '';
+
+    return $ip;
+}
+
+# Enabled for a player with no address: nothing can be sent anywhere. Said once
+# per player, not once per track.
+sub _warnNoAddress {
+    my $client = shift;
+
+    my $key = ($client->id() || '') . '/noaddress';
+    return if $warnedPlaceholder{$key}++;
+
+    $log->warn(sprintf(
+        "Eversolo [%s]: screen control is enabled for this player but no Eversolo address is set - choose the device under Player Settings > Eversolo Screen Control",
+        $client->name() || $client->id()
+    ));
+}
+
+
+# ---------------------------------------------------------------------------
+#  Power: the LMS player's power button drives the Eversolo.
+#
+#  The two directions are NOT symmetrical, and cannot be made so:
+#
+#    OFF  is one HTTP call, /ZidooMusicControl/v2/setPowerOption?tag=poweroff.
+#    ON   cannot be an HTTP call at all - the device is off, so nothing is
+#         listening on 9529 - and is a Wake-on-LAN magic packet instead.
+#
+#  (This is where an Eversolo differs from the Denon/Marantz receivers the
+#  equivalent LMS plugin drives: those keep a network-standby listener alive and
+#  can be woken over IP.  Eversolo do not, and say so - their own app sends a
+#  WoL packet too.  The device reports whether it will accept one in getModel's
+#  ableRemoteBoot, and requires its WIRED port; WoL does not work over Wi-Fi.)
+#
+#  Off by default per player.  A stray power event that shuts the device down
+#  costs a full cold boot to undo, which is not a thing to opt somebody into.
+# ---------------------------------------------------------------------------
+sub _powerCallback {
+    my $request = shift;
+    my $client  = $request->client() || return;
+
+    my $cprefs = $prefs->client($client);
+
+    return unless $cprefs->get('enabled');
+    return unless $cprefs->get('power_control');
+
+    my $on   = $request->getParam('_newvalue');
+       $on   = $client->power() unless defined $on;
+    my $name = $client->name() || $client->id();
+
+    if ($on) {
+        _wakeDevice($client);
+    }
+    else {
+        my $ip = _resolveIP($client) or return;
+
+        $log->info("Eversolo [$name]: player powered off — powering the device down");
+
+        # Any pending screen-off is moot: the device is going away entirely.
+        Slim::Utils::Timers::killTimers($client, \&_turnScreenOff);
+        delete $offPending{ $client->id() };
+        delete $screenState{ $client->id() };
+
+        Plugins::EversoloScreenControl::Discovery::setPowerOption(
+            $ip, $cprefs->get('eversolo_port') || 9529, 'poweroff' );
+    }
+
+    return;
+}
+
+# ---------------------------------------------------------------------------
+#  Wake-on-LAN.
+#
+#  A magic packet is six 0xFF bytes followed by the target MAC repeated sixteen
+#  times, broadcast on the local network.  It is sent to the directed broadcast
+#  of the device's own subnet (192.168.1.255 for a device at 192.168.1.197) as
+#  well as to 255.255.255.255, because plenty of switches drop one or the other,
+#  and to both of the ports the convention uses.
+#
+#  Nothing acknowledges a magic packet - it is fire and forget - so the screen
+#  is not asserted here.  The device takes the better part of a minute to boot;
+#  _reconcile notices it once it is answering.
+# ---------------------------------------------------------------------------
+sub _wakeDevice {
+    my $client = shift;
+
+    my $cprefs = $prefs->client($client);
+    my $name   = $client->name() || $client->id();
+
+    my $mac = Plugins::EversoloScreenControl::Discovery::normaliseMac(
+        $cprefs->get('eversolo_mac') );
+
+    if ( !$mac ) {
+        $log->warn(
+            "Eversolo [$name]: cannot wake the device - its hardware address is not known yet. "
+          . "Open Player Settings > Eversolo Screen Control once while the device is ON, and it will be learned."
         );
-    });
+        return;
+    }
+
+    my $packet = magicPacket($mac);
+
+    my $sock = IO::Socket::INET->new( Proto => 'udp', Blocking => 0 );
+
+    if ( !$sock ) {
+        $log->warn("Eversolo [$name]: could not open a socket to wake the device - $!");
+        return;
+    }
+
+    setsockopt( $sock, Socket::SOL_SOCKET(), Socket::SO_BROADCAST(), 1 );
+
+    my @targets = ('255.255.255.255');
+
+    # The device's own subnet, which is the one that actually has to carry it.
+    my $ip = _resolveIP($client) || '';
+    if ( $ip =~ /^(\d+\.\d+\.\d+)\.\d+$/ ) {
+        unshift @targets, "$1.255";
+    }
+
+    for my $target (@targets) {
+        my $addr = Socket::inet_aton($target) or next;
+
+        for my $port ( 9, 7 ) {
+            send( $sock, $packet, 0, Socket::pack_sockaddr_in( $port, $addr ) );
+        }
+    }
+
+    close $sock;
+
+    $log->info("Eversolo [$name]: player powered on — sent Wake-on-LAN to $mac");
+
+    return;
 }
 
-sub _warnAmbiguous {
-    my ($client, $ips) = @_;
+# Six 0xFF bytes, then the MAC sixteen times: 102 bytes.  Separate so it can be
+# checked byte for byte without a network (tools/t_power.pl).
+sub magicPacket {
+    my $mac = shift or return '';
 
-    my $key = ($client->id() || '') . '/ambiguous';
-    return if $warnedPlaceholder{$key}++;
+    $mac = lc $mac;
+    $mac =~ s/[^0-9a-f]//g;
 
-    $log->warn(sprintf(
-        "Eversolo [%s]: %d devices answer the control API (%s) — pick the right one under Player Settings > Eversolo Screen Control",
-        $client->name() || $client->id(), scalar(@$ips), join(', ', @$ips)
-    ));
-}
+    return '' unless length($mac) == 12;
 
-sub _warnPlaceholder {
-    my ($client, $ip, $foundCount) = @_;
+    my $target = pack( 'H12', $mac );
 
-    my $key = ($client->id() || '') . '/' . ($ip || '');
-    return if $warnedPlaceholder{$key}++;
-
-    $log->warn(sprintf(
-        "Eversolo [%s]: this player is bridged or virtual (%s), and the network scan found %s — set the Eversolo's address under Player Settings > Eversolo Screen Control, or press Scan again once the device is awake.",
-        $client->name() || $client->id(),
-        $ip || 'no address',
-        $foundCount ? "$foundCount devices to choose between" : 'no device'
-    ));
+    return ( "\xFF" x 6 ) . ( $target x 16 );
 }
 
 # ---------------------------------------------------------------------------
@@ -562,9 +628,10 @@ sub _sendEversoloCommand {
             command => $key,
             player  => ($client->name() || $client->id()),
             target  => "${ip}:${port}",
-            # A failure against a placeholder address has one cause and one
-            # cure, so say so in the error rather than leaving a bare timeout.
-            hint    => isPlaceholderIP($ip)
+            # A loopback address means the stored address is the server, not a
+            # device - one cause, one cure, so say so rather than leaving a
+            # bare timeout in the log.
+            hint    => ( $ip =~ /^(?:127\.|::1$)/ )
                 ? " (that address is this server, not an Eversolo — set the device's IP under Player Settings > Eversolo Screen Control)"
                 : '',
         },
