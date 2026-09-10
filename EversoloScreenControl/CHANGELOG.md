@@ -12,6 +12,70 @@ Version numbering follows [Semantic Versioning](https://semver.org/):
 
 ---
 
+## [2.2.0] — 2026-09-10
+
+Everything below has accumulated since 1.0.3. The plugin gained the ability to
+power the Eversolo on and off, learned to work with players fed through a
+bridge, and stopped taking the server's word for what is playing.
+
+### New Features
+- **Power the Eversolo on and off from the player's power button.** Optional and
+  off by default, per player, under **Control Eversolo power**. Powering off
+  sends the same shutdown the Eversolo's own app sends. Powering on is a
+  Wake-on-LAN magic packet, because the device is off and nothing is listening
+  for anything else.
+  - **Wake-on-LAN only works over the wired network port**, and the server has
+    to be on the same subnet. Over Wi-Fi the Eversolo will power down and not
+    come back. Eversolo document this themselves.
+  - The device's MAC address can only be read while it is **on**, so the
+    settings page reads it as soon as an address is entered and says so plainly
+    while it is still unknown. Tick the box while the device is off and a
+    power-off is a one-way trip until you switch it on by hand.
+- **A synced group powers each of its own Eversolos.** Press power on one player
+  of a sync group and every buddy set to follow it now drives its own device,
+  using its own settings. A buddy with the plugin turned off is left alone.
+- **The settings page identifies the device.** Type an address and the page asks
+  the Eversolo who it is, then shows its name — `DMP-A8 (ManCave)` rather than an
+  address echoed back at you. The port is configurable for anyone not on 9529.
+
+### Changes
+- **Players fed through a bridge or a virtual player now work.** The address is
+  taken from the settings page and nowhere else. It used to fall back to the
+  player's own address on the theory that the player might be running on the
+  Eversolo itself, which is wrong for exactly the setups that need this most —
+  a bridged player reports a placeholder address, so the screen commands went to
+  the server rather than the device.
+- **The screen is checked against the player, not just against events.** Every
+  minute the plugin compares what each enabled player is doing against what it
+  believes the screen is doing, and corrects a disagreement. A stop that the
+  plugin never witnessed — one that happened across a server restart, or that a
+  bridged player never announced — used to leave the screen on for ever with
+  nothing able to put it right.
+- **The Eversolo is asked directly when the server's state looks stuck.** A
+  player can sit in "playing" with a frozen clock when the thing feeding it goes
+  quiet, and the screen would follow it and stay on. When the clock stops moving
+  the plugin asks the device what it is actually doing and believes the answer.
+  This costs one request per stuck player and nothing at all in normal use.
+- A device that does not answer is treated as **no opinion**, never as
+  "stopped". A missed reply will not blank a screen mid-track.
+
+### Bug Fixes
+- Fixed: a reply from the Eversolo arriving late could act on a situation that
+  had already passed — blanking a screen that playback had since turned back on,
+  or acting for a player whose address had been changed underneath it. Replies
+  are now matched to the state that asked for them and discarded otherwise.
+- Fixed: the settings page could attach one device's name and Wake-on-LAN MAC to
+  a different device's address if the address was changed while a lookup was
+  still in flight.
+- Fixed: the chosen port was not saved.
+- Fixed: a screen-off timer created by the periodic check was not cancelled when
+  the plugin shut down.
+- Fixed: **Enabled** and **Control Eversolo power** could get into a state where
+  they could not be switched off again. The page repairs an affected setting on
+  the next view.
+
+---
+
 ## [1.0.3] — 2026-07-06
 
 ### Bug Fixes

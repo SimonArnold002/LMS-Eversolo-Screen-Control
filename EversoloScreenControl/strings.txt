@@ -10,20 +10,23 @@ PLUGIN_EVERSOLO_ENABLED
 PLUGIN_EVERSOLO_ENABLED_DESC
 	EN	Tick to activate screen control for this player. Leave unticked for players that are not connected to an Eversolo.
 
-PLUGIN_EVERSOLO_AUTO_IP
-	EN	Auto-detect Eversolo IP
+PLUGIN_EVERSOLO_TICK
+	EN	Enabled
 
-PLUGIN_EVERSOLO_AUTO_IP_DESC
-	EN	When ticked, the plugin uses this player's live IP address to reach the Eversolo (recommended). This means the plugin automatically follows IP changes from DHCP. Untick only if the Eversolo is at a different address from the player.
+PLUGIN_EVERSOLO_POWER
+	EN	Control Eversolo power
 
-PLUGIN_EVERSOLO_IP_DETECTED
-	EN	Current player IP:
+PLUGIN_EVERSOLO_POWER_DESC
+	EN	Turn the Eversolo off and on with this player's power button. Powering OFF is sent over the network; powering ON is a Wake-on-LAN packet, which the Eversolo only accepts on its WIRED network port and with WOL enabled on the device. Leave this off unless this player feeds the Eversolo - a stray power-off costs a full cold boot.
+
+PLUGIN_EVERSOLO_POWER_NOMAC
+	EN	The device's hardware address is not known yet, so it cannot be woken. Open this page once while the Eversolo is switched ON and it will be learned automatically.
 
 PLUGIN_EVERSOLO_IP
-	EN	Manual Eversolo IP Address
+	EN	Eversolo IP Address
 
 PLUGIN_EVERSOLO_IP_DESC
-	EN	Only used when auto-detect is off. Enter the Eversolo's IP address manually.
+	EN	The address of the Eversolo this player drives. Find it on the device: Settings > About. Give it a fixed address on your router so it cannot change. The name of the device appears here once it has been asked - the player's own address is irrelevant, so a player fed through a bridge works exactly the same way.
 
 PLUGIN_EVERSOLO_PORT
 	EN	Eversolo API Port
