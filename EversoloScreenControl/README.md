@@ -93,6 +93,8 @@ Two things follow from that, and both are worth knowing before you tick the box:
 - **Wake-on-LAN is wired-only.** Over Wi-Fi the Eversolo's network interface is not listening while it is off, so it will power down and not come back. Use Ethernet.
 - **The MAC address is learned while the device is on.** The plugin reads it from the device the first time it identifies it, because by the time it needs waking it is too late to ask. So open the settings page once with the Eversolo switched on; if the MAC isn't known yet, the page says so.
 
+**Synced players each drive their own Eversolo.** If you press power on one player of a sync group, every buddy set to follow it powers its own device too, using its own settings. A buddy that has the plugin switched off, or power control unticked, is left alone.
+
 ### Bridged and virtual players
 
 The player driving the Eversolo doesn't have to be the Eversolo. **LMS → HQPlayer Bridge → HQPlayer → Eversolo** works exactly like a direct connection: the plugin is configured on whichever player you play to, and the screen commands go to the Eversolo at its own address. Bridged and virtual players (HQPlayer Bridge, player groups, UPnP bridges) have no network address of their own — that's fine, because the player's address isn't what's used.

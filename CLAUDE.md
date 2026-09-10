@@ -183,20 +183,20 @@ unchecked, no devices, no address, and nothing saved (the save happens in
 looked like a settings bug. It was a dead handler. The page now depends on
 `Discovery` and its own prefs, and nothing else.
 
-The address section is one radio group, `eversolo_choice`:
+**There is no device picker.** The address is a plain text field. The radio
+group that used to sit here (`eversolo_choice`, one row per discovered device
+plus a `__manual__` row, arbitrated by a `_picker` sub) went with the discovery
+code on 2026-08-30 and is not coming back — with nothing to discover there is
+nothing to pick from. The page's five fields are `pref_eversolo_ip`,
+`pref_eversolo_port`, `pref_screen_off_delay` and the two checkboxes
+`pref_enabled` and `pref_power_control`; every one is range-checked in `handler`
+and falls back to its default rather than storing a value the plugin would have
+to defend against later (port to 9529, delay to 30).
 
-- one row per discovered device, whose **value IS that device's address**, so
-  choosing a row stores the address directly — there is no second identity to
-  keep in step;
-- `__manual__`, which takes the text box instead, for a device no sweep reaches.
-
-Which row is checked is decided in Perl (`_picker`), never by a comparison in
-the template: a radio group with nothing checked **submits no value at all**, so
-the choice silently fails to apply — and a template-level `[% IF x == y %]` is
-one empty value away from exactly that. `_picker` is a pure function holding one
-invariant: exactly one control is checked, in every state. A stored address that
-matches a discovered device checks that row; anything else checks manual, by
-elimination.
+Above them the page shows what the device said about itself — the name from
+`eversolo_name` and, when power control is on, whether `eversolo_mac` is known
+yet. Both are read-only, and both are cleared the instant the address changes: a
+name or a Wake-on-LAN MAC must never sit beside a different device's address.
 
 Two more things the page has to get right:
 
