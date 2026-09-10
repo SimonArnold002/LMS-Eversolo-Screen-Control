@@ -16,7 +16,7 @@ The plugin is **per-player**, not global. It appears in the **Player Settings**
 menu (alongside DSD Player, etc.) and is enabled/disabled independently for each
 LMS player. Players not attached to an Eversolo simply leave it off and are unaffected.
 
-**Current version: 2.1.1**
+**Current version: 2.2.0**
 
 ## How it works
 
@@ -77,6 +77,15 @@ Two constraints fall out of that and both are user-visible:
 
 Power is opt-in per player (`power_control`, default off) because ticking it
 hands a device's mains state to a player button.
+
+**Synced players (2.2.0).** LMS applies `syncPower` to a sync group's buddies by
+calling their power methods directly, so a buddy never raises a power Request of
+its own and a subscriber only ever hears from the player the user pressed. The
+power callback therefore mirrors LMS's own target set — the pressed player, plus
+each `syncedWith` buddy whose server-side `syncPower` is on — and re-reads the
+plugin preferences of each one. Every player still decides for itself: a buddy
+with `enabled` or `power_control` off is skipped, and a buddy with its own
+Eversolo powers that device down rather than the pressed player's.
 
 ### Address resolution
 
@@ -262,6 +271,19 @@ A device that does not answer returns **undef, meaning "no opinion"** — never
 In the stale case the command is sent regardless of `%screenState`: the belief
 about the screen is precisely what has just been shown to be unreliable.
 
+**An answer must not outlive the question that asked it (2.2.0).** The device is
+asked over non-blocking HTTP, so the world can move on before the reply lands: a
+`pause` observed a moment ago must not blank a screen that a later `play` has
+since turned on, and a reply addressed to an old device address, a disabled
+player or an unloaded plugin must not act at all. Two counters bound that.
+`%playbackRevision` is bumped per player on every playback notification, and
+`$lifecycleRevision` on every init and shutdown; both are captured when the
+question is sent and re-checked in the callback, alongside the player's current
+address, port, `enabled` preference and live play mode. Anything that changed
+mid-flight discards the answer rather than acting on it. `PlayerSettings::_lookup`
+carries the same guard, and there it matters more: a late `getModel` reply could
+otherwise attach one device's Wake-on-LAN MAC to a different device's address.
+
 ## Per-player architecture (critical)
 
 Everything is keyed per player so multiple Eversolo devices coexist cleanly:
@@ -313,7 +335,7 @@ from the repo root:
   answers a broadcast.
 
 - `perl tools/t_settings.pl` — **runs the real settings handler end to end**
-  (45 assertions). It stubs the LMS pieces `PlayerSettings.pm` touches, loads
+  (54 assertions). It stubs the LMS pieces `PlayerSettings.pm` touches, loads
   the actual module, and drives `handler()` through every state a user puts it
   in, asserting each invariant AND that the handler **ran to completion** each
   time — `SUPER_RAN` proves it, because the SUPER call is the handler's last
@@ -323,8 +345,19 @@ from the repo root:
   compiles a module, it does not execute it, so it cannot see a handler that
   dies half way. **Nothing had ever run the handler.** Anti-tested by
   reintroducing that exact bug (a call into an unloaded `Plugin.pm`), which
-  takes the suite from 45 green to **19 passed, 26 failed**. Point
+  took the suite from its then-45 green to **19 passed, 26 failed**. Point
   `ESC_SETTINGS` at a mutated copy to anti-test any assertion.
+
+- `perl tools/t_plugin.pl` — the **stateful** `Plugin.pm` paths, which no other
+  suite reaches (6 assertions). It stubs the LMS pieces `Plugin.pm` touches,
+  loads the real module and drives it through the three cases that only appear
+  once state outlives a single call: a device-state answer arriving after a
+  later playback event, an off-timer created by reconcile while the screen state
+  is still unknown and then cancelled at shutdown, and a power press on a synced
+  group reaching exactly the buddies LMS itself would power. Each of those is a
+  race or a cross-player interaction, so each passes trivially against code that
+  does nothing — the assertions check that the unguarded path WOULD have acted.
+  `ESC_PLUGIN` points it at a mutated copy.
 
 ## Versioning (Semantic Versioning)
 
@@ -334,10 +367,24 @@ from the repo root:
 - **MINOR (1.x.0)** — new features / settings, backwards-compatible.
 - **MAJOR (x.0.0)** — breaking changes (e.g. renamed prefs that lose existing config).
 
-When bumping the version, update **all three** in the same change:
+When bumping the version, update **all four** in the same change:
 1. `<version>` in `install.xml` (this is what LMS compares to offer updates).
-2. `PLUGIN_VERSION` constant in `Plugin.pm` (logged at startup).
-3. A new dated section at the top of `CHANGELOG.md`.
+2. `version="…"` in `repo.xml` — the plugin manager reads this one, and it must
+   match `install.xml` or the update it offers is not the build it installs.
+3. `PLUGIN_VERSION` constant in `Plugin.pm` (logged at startup).
+4. `<sha>` in `repo.xml`, recomputed with `shasum EversoloScreenControl.zip`
+   AFTER the zip is rebuilt. It is the checksum the download is verified
+   against, so a stale one fails the install outright.
+
+**Bump on every rebuild.** LMS keys "is there an update" on the version number
+alone, so a rebuilt zip carrying the old number is refused and the user keeps
+running the previous build with no error to show for it.
+
+`CHANGELOG.md` and `README.md` are **not** part of a dev build. They are written
+once, at the merge to `main`, as a single section headed with the released
+version covering everything since the last release — main is the only channel
+users install from, so a section per dev build is noise. This file is the
+exception: it is the dev record and is updated on every build.
 
 ## Packaging
 

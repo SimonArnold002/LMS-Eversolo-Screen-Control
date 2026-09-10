@@ -95,11 +95,17 @@ our $CPREFS = Stub::Prefs->new;
 }
 our $ANSWER;        # what the device at the address replies, or undef
 our @ASKED;         # every address identify() was called with
+our $DEFER_IDENTIFY;
+our @PENDING_IDENTIFY;
 {
     package Plugins::EversoloScreenControl::Discovery;
     sub identify {
         my ($ip, $port, $cb) = @_;
         push @main::ASKED, $ip;
+        if ($main::DEFER_IDENTIFY) {
+            push @main::PENDING_IDENTIFY, $cb;
+            return;
+        }
         return $cb->($main::ANSWER);
     }
     sub describe {
@@ -132,14 +138,18 @@ sub completed {
     ok($p->{'SUPER_RAN'}, "reached SUPER::handler - $what");
 }
 
-my $MANCAVE = { model => 'DMP-A8', name => 'ManCave' };
+my $MANCAVE = {
+    model => 'DMP-A8', name => 'ManCave', mac => '800a805e2b7b'
+};
 
 sub run {
     my (%opt) = @_;
 
     $CPREFS = Stub::Prefs->new( %{ $opt{prefs} || {} } );
     $ANSWER = $opt{answer};
+    $DEFER_IDENTIFY = $opt{defer} || 0;
     @ASKED  = ();
+    @PENDING_IDENTIFY = ();
 
     my %params = %{ $opt{params} || {} };
     my $client = exists $opt{client} ? $opt{client} : Stub::Client->new;
@@ -169,10 +179,23 @@ print "\n-- an address is set, the device has not been asked yet --\n";
 print "\n-- the name is known: show it, do not ask again --\n";
 {
     my $p = run( prefs => { eversolo_ip => '192.168.1.197',
-                            eversolo_name => 'DMP-A8 (ManCave)' } );
+                            eversolo_name => 'DMP-A8 (ManCave)',
+                            eversolo_mac => '800a805e2b7b' } );
     completed($p, 'name known');
     is($p->{'deviceName'}, 'DMP-A8 (ManCave)', 'the name is on the page');
     is(scalar @ASKED, 0, 'the device is not asked again on every page load');
+}
+
+print "\n-- a name is cached but Wake-on-LAN still needs the MAC --\n";
+{
+    my $p = run(
+        prefs  => { eversolo_ip => '192.168.1.197',
+                    eversolo_name => 'DMP-A8 (ManCave)' },
+        answer => $MANCAVE,
+    );
+    completed($p, 'name known, MAC missing');
+    is(scalar @ASKED, 1, 'the device is asked again while its MAC is missing');
+    is($CPREFS->get('eversolo_mac'), '800a805e2b7b', 'the missing MAC is learned');
 }
 
 print "\n-- the device does not answer --\n";
@@ -211,6 +234,23 @@ print "\n-- SAVING a DIFFERENT address --\n";
     is($CPREFS->get('eversolo_ip'), '192.168.1.50', 'the new address is stored');
     is($CPREFS->get('eversolo_name'), '',
         "the old device's name is dropped - it must never sit beside another address");
+}
+
+print "\n-- a late answer from the old address is ignored --\n";
+{
+    my $p = run(
+        prefs => { eversolo_ip => '192.168.1.197', eversolo_port => 9529 },
+        answer => $MANCAVE,
+        defer => 1,
+    );
+    completed($p, 'deferred lookup');
+    is(scalar @PENDING_IDENTIFY, 1, 'one asynchronous lookup is pending');
+
+    $CPREFS->set('eversolo_ip', '192.168.1.50');
+    $PENDING_IDENTIFY[0]->($MANCAVE);
+
+    is($CPREFS->get('eversolo_name'), undef, "the old device's name is not retained");
+    is($CPREFS->get('eversolo_mac'),  undef, "the old device's MAC is not retained");
 }
 
 print "\n-- SAVING with the box emptied --\n";

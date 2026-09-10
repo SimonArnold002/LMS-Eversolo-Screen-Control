@@ -31,7 +31,7 @@ use Slim::Player::Source;
 
 use Plugins::EversoloScreenControl::Discovery;
 
-use constant PLUGIN_VERSION => '2.1.1';
+use constant PLUGIN_VERSION => '2.2.0';
 
 # There is no network scan and there must not be one. A /24 sweep took the
 # server off the network (it ARP-floods the box), and the SSDP search that
@@ -56,6 +56,7 @@ my $log = Slim::Utils::Log->addLogCategory({
 });
 
 my $prefs = preferences('plugin.eversoloscreencontrol');
+my $serverPrefs = preferences('server');
 
 # Per-player defaults (applied the first time a player is seen)
 $prefs->setPlayerDefault('enabled',          0);
@@ -84,10 +85,9 @@ $prefs->setPlayerDefault('screen_off_delay', 30);
 # rather than assuming it is already right.
 my %screenState;
 
-# Players with an off-timer already scheduled { client_id => 1 }.  Slim::Utils::
-# Timers has no way to ask whether a timer is pending (killTimers only reports
-# what it removed), so the pending state is tracked here — the reconcile pass
-# must not stack a second off-timer on top of one that is already running.
+# Players with an off-timer already scheduled { client_id => client }.  Keeping
+# the client object as the value lets shutdown cancel even a reconcile-created
+# timer whose screen state is still unknown.
 my %offPending;
 
 # Last song position seen for a player { client_id => seconds }, sampled once
@@ -95,6 +95,15 @@ my %offPending;
 # LMS still claims 'play' is the signal that LMS's state is stale — that is
 # what triggers the one and only call the plugin makes to the device itself.
 my %lastElapsed;
+
+# Playback notifications invalidate an in-flight device-state question.  The
+# HTTP answer is asynchronous and must not apply a pause/stop observed before a
+# later play event.
+my %playbackRevision;
+
+# Likewise, an answer from a previous plugin lifecycle must not act after the
+# plugin has shut down or been reloaded.
+my $lifecycleRevision = 0;
 
 # Players already warned about having no address set (see _warnNoAddress), so
 # the warning is said once per player rather than once per track.  Declared up
@@ -108,6 +117,8 @@ sub getDisplayName {
 
 sub initPlugin {
     my $class = shift;
+
+    $lifecycleRevision++;
 
     $class->SUPER::initPlugin(@_);
 
@@ -151,8 +162,15 @@ sub shutdownPlugin {
         'Eversolo Screen Control plugin shutting down.'
     );
 
-    # Kill every pending screen-off timer (one per player).  Timers are keyed
-    # by the client object, so resolve each id back to its client to match.
+    $lifecycleRevision++;
+
+    # Reconcile can schedule an off timer while screenState is still unknown,
+    # so cancel the client objects retained in offPending as well as timers for
+    # players which already have a known state.
+    for my $client (values %offPending) {
+        Slim::Utils::Timers::killTimers($client, \&_turnScreenOff) if $client;
+    }
+
     for my $id (keys %screenState) {
         my $client = Slim::Player::Client::getClient($id) || next;
         Slim::Utils::Timers::killTimers($client, \&_turnScreenOff);
@@ -162,6 +180,7 @@ sub shutdownPlugin {
     %screenState       = ();
     %offPending        = ();
     %lastElapsed       = ();
+    %playbackRevision  = ();
     %warnedPlaceholder = ();
 
     Slim::Control::Request::unsubscribe(\&_playbackCallback);
@@ -262,9 +281,26 @@ sub _askDevice {
     my $id   = $client->id() || return;
     my $ip   = _resolveIP($client) || return;
     my $port = $prefs->client($client)->get('eversolo_port') || 9529;
+    my $requestRevision = $playbackRevision{$id} || 0;
+    my $lifecycle       = $lifecycleRevision;
 
     Plugins::EversoloScreenControl::Discovery::deviceState($ip, $port, sub {
         my $deviceMode = shift;
+
+        # The player, selected device, or plugin lifecycle may have changed
+        # while the non-blocking request was in flight.  Only the exact state
+        # which prompted the question may consume its answer.
+        return unless $lifecycle == $lifecycleRevision;
+
+        my $cprefs = $prefs->client($client);
+        return unless $cprefs->get('enabled');
+        return unless ($playbackRevision{$id} || 0) == $requestRevision;
+
+        my $current_ip = $cprefs->get('eversolo_ip') || '';
+        $current_ip =~ s/^\s+|\s+$//g;
+        my $current_port = $cprefs->get('eversolo_port') || 9529;
+        return unless $current_ip eq $ip && $current_port == $port;
+        return unless ( Slim::Player::Source::playmode($client) || 'stop' ) eq 'play';
 
         my $name = $client->name() || $id;
 
@@ -363,13 +399,37 @@ sub _powerCallback {
     my $request = shift;
     my $client  = $request->client() || return;
 
+    my $on   = $request->getParam('_newvalue');
+       $on   = $client->power() unless defined $on;
+
+    # LMS applies syncPower to buddies by calling their power methods directly,
+    # so they do not generate their own Request notifications.  Mirror the same
+    # target set here and apply each player's independent plugin preferences.
+    my @clients = ($client);
+    if ( $client->isSynced() ) {
+        push @clients, grep {
+            $_ && $serverPrefs->client($_)->get('syncPower')
+        } $client->syncedWith();
+    }
+
+    my %seen;
+    for my $target (@clients) {
+        my $id = $target->id() || next;
+        next if $seen{$id}++;
+        _setDevicePower($target, $on);
+    }
+
+    return;
+}
+
+sub _setDevicePower {
+    my ($client, $on) = @_;
+
     my $cprefs = $prefs->client($client);
 
     return unless $cprefs->get('enabled');
     return unless $cprefs->get('power_control');
 
-    my $on   = $request->getParam('_newvalue');
-       $on   = $client->power() unless defined $on;
     my $name = $client->name() || $client->id();
 
     if ($on) {
@@ -479,6 +539,8 @@ sub _playbackCallback {
     my $client  = $request->client() || return;
     my $id      = $client->id()      || return;
 
+    $playbackRevision{$id}++;
+
     # ---- Per-player gate: is Eversolo control enabled for THIS player? ----
     return unless $prefs->client($client)->get('enabled');
 
@@ -573,7 +635,7 @@ sub _onPauseOrStop {
         \&_turnScreenOff,             # callback
     );
 
-    $offPending{$id} = 1;
+    $offPending{$id} = $client;
 }
 
 # ---------------------------------------------------------------------------

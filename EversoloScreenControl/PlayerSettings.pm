@@ -96,6 +96,7 @@ sub handler {
         # Store the address now rather than leaving it to SUPER::handler at the
         # end of this method, because the rest of this method reads it back.
         $cprefs->set('eversolo_ip',    $now);
+        $cprefs->set('eversolo_port',  $params->{'pref_eversolo_port'});
         $cprefs->set('enabled',        $params->{'pref_enabled'});
         $cprefs->set('power_control',  $params->{'pref_power_control'});
 
@@ -129,9 +130,11 @@ sub handler {
         # visible cause rather than being a mystery.
         $params->{'deviceMAC'} = $cprefs->get('eversolo_mac') || '';
 
-        # Nothing known about this address yet - ask, so the answer is here on
-        # the next view. Costs one HTTP request to one known address.
-        _lookup($client, $ip, $port) if $ip ne '' && $params->{'deviceName'} eq '';
+        # Ask until both the display identity and the MAC needed for Wake-on-LAN
+        # are known.  The answer appears on the next view.
+        _lookup($client, $ip, $port)
+            if $ip ne ''
+            && ( $params->{'deviceName'} eq '' || $params->{'deviceMAC'} eq '' );
     }
     else {
         $params->{'deviceName'} = '';
@@ -145,18 +148,28 @@ sub handler {
 #
 #  Asynchronous, so it cannot fill in the page that asked for it - the name
 #  appears on the next view.  That is the honest trade for not blocking the
-#  event loop, and the answer is stored, so it is asked once per address rather
-#  than once per page load.
+#  event loop.  The answer is stored, so it is not asked again once both the
+#  display identity and Wake-on-LAN MAC are known.
 # ---------------------------------------------------------------------------
 sub _lookup {
     my ($client, $ip, $port) = @_;
 
     return unless $client && $ip;
 
+    $ip   = _address($ip);
+    $port = 9529 unless defined $port && $port =~ /^\d+$/;
+
     Plugins::EversoloScreenControl::Discovery::identify($ip, $port, sub {
         my $rec = shift or return;
 
         my $cprefs = $prefs->client($client);
+
+        # The lookup is asynchronous.  Do not let an answer from an address the
+        # user has since replaced attach its name or, more importantly, its MAC
+        # to the newly selected device.
+        my $current_ip   = _address( $cprefs->get('eversolo_ip') );
+        my $current_port = $cprefs->get('eversolo_port') || 9529;
+        return unless $current_ip eq $ip && $current_port == $port;
 
         my $name = Plugins::EversoloScreenControl::Discovery::describe($rec);
         $cprefs->set('eversolo_name', $name) if $name;
