@@ -31,7 +31,7 @@ use Slim::Player::Source;
 
 use Plugins::EversoloScreenControl::Discovery;
 
-use constant PLUGIN_VERSION => '2.2.0';
+use constant PLUGIN_VERSION => '2.2.1';
 
 # There is no network scan and there must not be one. A /24 sweep took the
 # server off the network (it ARP-floods the box), and the SSDP search that
