@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Eversolo Screen Control — for Lyrion Music Server</title>
+<style>
+  :root {
+    --lb-purple: #353070;
+    --lb-purple-dark: #211d4d;
+    --lb-orange: #eb743b;
+    --ink: #1c1c28;
+    --muted: #5b5b6b;
+    --line: #e4e4ec;
+    --bg: #f7f7fa;
+    --card: #ffffff;
+    --code-bg: #f0f0f5;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: var(--ink);
+    background: var(--bg);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--lb-orange); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  header.hero {
+    background: linear-gradient(135deg, var(--lb-purple) 0%, var(--lb-purple-dark) 100%);
+    color: #fff;
+    padding: 56px 24px 48px;
+    text-align: center;
+  }
+  header.hero h1 { margin: 0 0 10px; font-size: 2.1rem; letter-spacing: -0.01em; }
+  header.hero p.tagline { margin: 0 auto; max-width: 660px; color: #d6d4ea; font-size: 1.08rem; }
+  header.hero p.tagline a { color: #ffb58c; }
+  .badges { margin-top: 22px; display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+  .badge {
+    display: inline-block; padding: 5px 13px; border-radius: 999px;
+    font-size: 0.82rem; font-weight: 600;
+    background: rgba(255,255,255,0.12); color: #fff; border: 1px solid rgba(255,255,255,0.22);
+  }
+  .badge.accent { background: var(--lb-orange); border-color: var(--lb-orange); }
+  .hero-actions { margin-top: 26px; display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+  .btn { display: inline-block; padding: 11px 22px; border-radius: 8px; font-weight: 600; font-size: 0.95rem; }
+  .btn-primary { background: var(--lb-orange); color: #fff; }
+  .btn-primary:hover { text-decoration: none; filter: brightness(1.06); }
+  .btn-ghost { background: rgba(255,255,255,0.12); color: #fff; border: 1px solid rgba(255,255,255,0.30); }
+  .btn-ghost:hover { text-decoration: none; background: rgba(255,255,255,0.20); }
+
+  main { max-width: 880px; margin: 0 auto; padding: 8px 24px 64px; }
+  section { margin-top: 44px; }
+  h2 {
+    font-size: 1.45rem; margin: 0 0 6px; padding-bottom: 8px;
+    border-bottom: 3px solid var(--lb-orange); display: inline-block;
+  }
+  h3 { font-size: 1.12rem; margin: 26px 0 6px; color: var(--lb-purple); }
+  p { margin: 10px 0; }
+  ul, ol { padding-left: 22px; }
+  li { margin: 5px 0; }
+  li > ul { margin-top: 5px; }
+
+  table {
+    width: 100%; border-collapse: collapse; margin: 14px 0;
+    background: var(--card); border-radius: 10px; overflow: hidden;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06); font-size: 0.95rem;
+  }
+  th, td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { background: var(--lb-purple); color: #fff; font-weight: 600; }
+  tr:last-child td { border-bottom: none; }
+  tr:nth-child(even) td { background: #fafafc; }
+  td strong { color: var(--lb-purple); }
+
+  code {
+    background: var(--code-bg); padding: 2px 6px; border-radius: 5px;
+    font-family: "SF Mono", SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.88em;
+  }
+  pre {
+    background: var(--lb-purple-dark); color: #f3f1ff; padding: 16px 18px;
+    border-radius: 10px; overflow-x: auto; font-size: 0.9rem;
+  }
+  pre code { background: none; padding: 0; color: inherit; }
+
+  blockquote {
+    margin: 14px 0; padding: 12px 18px; background: #fff7f1;
+    border-left: 4px solid var(--lb-orange); border-radius: 0 8px 8px 0; color: var(--muted);
+  }
+  blockquote p { margin: 0; }
+
+  .feature-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; margin-top: 16px; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+  }
+  .card h4 { margin: 0 0 6px; font-size: 1rem; color: var(--lb-purple); }
+  .card p { margin: 0; font-size: 0.9rem; color: var(--muted); }
+  .card .needs { display: block; margin-top: 8px; font-size: 0.78rem; font-weight: 600; color: var(--lb-orange); }
+
+  footer {
+    text-align: center; color: var(--muted); font-size: 0.88rem;
+    padding: 32px 24px 48px; border-top: 1px solid var(--line); margin-top: 48px;
+  }
+  @media (max-width: 600px) {
+    header.hero h1 { font-size: 1.6rem; }
+    main { padding: 8px 16px 48px; }
+  }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <h1>Eversolo Screen Control — for Lyrion Music Server</h1>
+  <p class="tagline">Drives the screen on an <strong>Eversolo DMP-A8 or DMP-A6</strong> from <strong>Lyrion Music Server (LMS)</strong>: the display comes on when music starts, stays awake between tracks, and switches off again a set time after playback stops. Optionally the player's power button shuts the Eversolo down too. It is <strong>per-player</strong>, so only the players you point at an Eversolo are ever touched.</p>
+  <div class="badges">
+    <span class="badge accent">v2.2.0</span>
+    <span class="badge">LMS 8.0+</span>
+    <span class="badge">DMP-A8 · DMP-A6</span>
+    <span class="badge">Per-player</span>
+  </div>
+  <div class="hero-actions">
+    <a class="btn btn-primary" href="EversoloScreenControl.zip">Download latest</a>
+    <a class="btn btn-ghost" href="#installation">Installation</a>
+  </div>
+</header>
+
+<main>
+<section id="features-at-a-glance">
+<h2>Features at a glance</h2>
+<div class="feature-cards">
+<div class="card"><h4>Screen on with the music</h4><p>The display lights the moment playback starts on an enabled player</p><span class="needs">Needs: nothing</span></div>
+<div class="card"><h4>No screensaver mid-album</h4><p>The ON key is re-sent at every track change, which resets the Eversolo's own screensaver timer so it never cuts in during continuous play</p><span class="needs">Needs: nothing</span></div>
+<div class="card"><h4>Screen off after a delay</h4><p>A configurable wait (default 30 s) after pause or stop, cancelled if you start again</p><span class="needs">Needs: nothing</span></div>
+<div class="card"><h4>Power off with the player</h4><p>The player's power button shuts the Eversolo down — the same shutdown its own app sends</p><span class="needs">Needs: nothing</span></div>
+<div class="card"><h4>Per-player</h4><p>Lives in Player Settings and is enabled per player — every other player is unaffected</p><span class="needs">Needs: nothing</span></div>
+<div class="card"><h4>Synced groups</h4><p>Power a sync group and each buddy drives its own Eversolo with its own settings</p><span class="needs">Needs: nothing</span></div>
+<div class="card"><h4>Bridged and virtual players</h4><p>HQPlayer Bridge, player groups and UPnP bridges work the same, because the player's own address is never used</p><span class="needs">Needs: nothing</span></div>
+<div class="card"><h4>Named, not numbered</h4><p>The settings page asks the device who it is and shows <strong>DMP-A8 (ManCave)</strong> beside the address</p><span class="needs">Needs: nothing</span></div>
+<div class="card"><h4>Self-correcting</h4><p>Once a minute the real player state is checked and any disagreement fixed, so a stop lost to a server restart still ends with the screen off</p><span class="needs">Needs: nothing</span></div>
+<div class="card"><h4>Asks the device</h4><p>When LMS reports "playing" with a frozen clock, the Eversolo is asked what it is really doing and the screen set to match</p><span class="needs">Needs: nothing</span></div>
+<div class="card"><h4>No network scanning</h4><p>You type the address once. No subnet sweep, no SSDP</p><span class="needs">Needs: The Eversolo's IP address</span></div>
+</div>
+<p>Everything runs through LMS's non-blocking HTTP, so nothing here can interrupt audio. In normal use the plugin makes no calls to the device beyond the ON and OFF it already sends.</p>
+</section>
+<section id="requirements">
+<h2>Requirements</h2>
+<table>
+<thead><tr>
+<th>Component</th>
+<th>Minimum</th>
+</tr></thead>
+<tbody>
+<tr><td>Lyrion Music Server</td><td>8.0</td></tr>
+<tr><td>Eversolo firmware</td><td>Any — the HTTP control API is present in every released firmware</td></tr>
+<tr><td>Network</td><td>LMS and the Eversolo on the same local network</td></tr>
+</tbody></table>
+<p>Pure Perl, no extra server software, no external tools — it runs the same on a Raspberry Pi or a NAS.</p>
+</section>
+<section id="installation">
+<h2>Installation</h2>
+<p><strong>Via repository (recommended).</strong> In LMS go to <strong>Settings → Plugins → Additional Repositories</strong> and add:</p>
+<pre><code>https://simonarnold002.github.io/LMS-Eversolo-Screen-Control/repo.xml</code></pre>
+<p>Then install <strong>Eversolo Screen Control</strong> from the plugin list and restart.</p>
+<p><strong>Manual.</strong> Download <code>EversoloScreenControl.zip</code> from the <a href="https://github.com/SimonArnold002/LMS-Eversolo-Screen-Control">repository</a>, unzip it into your LMS <code>Plugins/</code> directory so it sits as <code>Plugins/EversoloScreenControl/</code>, and restart:</p>
+<pre><code>sudo rm -rf /var/lib/squeezeboxserver/Plugins/EversoloScreenControl
+sudo unzip EversoloScreenControl.zip -d /var/lib/squeezeboxserver/Plugins/
+sudo systemctl restart lyrionmusicserver</code></pre>
+<p>Your Plugins directory is shown under <em>LMS → Settings → Information → Plugin Folders</em>. Common locations:</p>
+<ul>
+<li>Linux (package): <code>/var/lib/squeezeboxserver/Plugins/</code>
+</li>
+<li>Linux (manual): <code>~/.config/squeezeboxserver/Plugins/</code>
+</li>
+<li>macOS: <code>~/Library/Application Support/Squeezebox/Plugins/</code>
+</li>
+<li>Docker: wherever the container maps the Plugins volume
+</li></ul>
+<blockquote><p>Install it <strong>one way only</strong>. A copy installed from the repository shadows a manually installed one, and the version you edit is not the version that runs.</p></blockquote>
+</section>
+<section id="configuration-per-player">
+<h2>Configuration (per player)</h2>
+<p>Select a player, then go to <strong>Settings → Player → Eversolo Screen Control</strong>:</p>
+<table>
+<thead><tr>
+<th>Setting</th>
+<th>Description</th>
+<th>Default</th>
+</tr></thead>
+<tbody>
+<tr><td><strong>Enable Eversolo Screen Control</strong></td><td>Activate screen control for <em>this</em> player</td><td>Off</td></tr>
+<tr><td><strong>Control Eversolo power</strong></td><td>Also drive the Eversolo's power from the player's power button</td><td>Off</td></tr>
+<tr><td><strong>Eversolo IP Address</strong></td><td>The address of the Eversolo this player feeds</td><td>—</td></tr>
+<tr><td><strong>Eversolo API Port</strong></td><td>HTTP control port</td><td><code>9529</code></td></tr>
+<tr><td><strong>Screen Off Delay (seconds)</strong></td><td>Wait after pause or stop before the screen goes off</td><td><code>30</code></td></tr>
+</tbody></table>
+<p>Only players with <strong>Enable</strong> ticked send anything to a device. Every other player is ignored.</p>
+<h3>You tell it where the Eversolo is</h3>
+<p>Type the address into <strong>Eversolo IP Address</strong> and save. That is the whole of the setup.</p>
+<p>There is no network scan. Two were tried and both removed: a sweep of the local subnet, which floods the ARP table and can take the server off the network, and an SSDP search, which was a lot of machinery for a problem nobody has — you know the address, and typing it once is less work than either.</p>
+<p>What the plugin does with the address is ask the device who it is, so the settings page can show <strong>DMP-A8 (ManCave)</strong> rather than echoing the address back. That answer arrives asynchronously, so it appears the next time you open the page.</p>
+<p>To find the address, on the DMP-A8 touch screen go to <strong>Settings → About</strong> and read it from the network section. Assign a static IP or a DHCP reservation so it stays put.</p>
+<h3>Powering the Eversolo off</h3>
+<p>Tick <strong>Control Eversolo power</strong> and the player's power button shuts the device down, with an HTTP <code>setPowerOption?tag=poweroff</code> — the same shutdown the Eversolo's own app sends.</p>
+<blockquote><p>This is a <strong>one-way</strong> switch. Once the Eversolo is off it drops off the network and its player disappears from LMS, so there is nothing left in LMS to press. Switch it back on at the device.</p></blockquote>
+<p><strong>Synced players each drive their own Eversolo.</strong> Press power on one player of a sync group and every buddy set to follow it powers its own device too, using its own settings. A buddy with the plugin switched off, or power control unticked, is left alone.</p>
+<h3>Bridged and virtual players</h3>
+<p>The player driving the Eversolo doesn't have to be the Eversolo. <strong>LMS → HQPlayer Bridge → HQPlayer → Eversolo</strong> works exactly like a direct connection: configure the plugin on whichever player you play to, and the screen commands go to the Eversolo at its own address. Bridged and virtual players have no network address of their own, which doesn't matter, because the player's address is never what's used.</p>
+<h3>It corrects itself, and it asks the Eversolo</h3>
+<p>The screen doesn't rely on catching every event. Once a minute each enabled player's actual state is checked and any disagreement fixed — so a player that stopped while the server was restarting, or a stop the bridge never announced, still ends with the screen off.</p>
+<p>Nor does it take LMS's word as final. A player fed through a bridge can get stuck reporting "playing" with a frozen clock after the far end stops talking. When the plugin sees that — playing, but the song position hasn't moved — it asks the Eversolo directly what <em>it</em> is doing, and sets the screen to match. That question is only asked when it can change the answer: playing with a moving clock, or plainly stopped, are both settled without touching the network.</p>
+</section>
+<section id="how-it-works">
+<h2>How it works</h2>
+<pre><code>Music starts playing
+    → cancel any pending "screen off" timer
+    → send Key.Screen.ON to Eversolo
+
+New song starts (track change)
+    → cancel any pending "screen off" timer
+    → re-send Key.Screen.ON  (resets Eversolo screensaver timer)
+
+Music pauses or stops
+    → start a 30-second timer
+
+Timer fires (and player is still paused/stopped)
+    → send Key.Screen.OFF to Eversolo
+
+Music resumes before timer fires
+    → timer is cancelled, screen stays on
+
+Player powered off      (only with "Control Eversolo power")
+    → send setPowerOption?tag=poweroff to Eversolo</code></pre>
+<p>Every HTTP request goes through LMS's <code>Slim::Networking::SimpleAsyncHTTP</code>, so none of it blocks playback. The endpoints used:</p>
+<pre><code>http://&lt;IP&gt;:9529/ZidooControlCenter/RemoteControl/sendkey?key=&lt;COMMAND&gt;
+http://&lt;IP&gt;:9529/ZidooMusicControl/v2/setPowerOption?tag=poweroff
+http://&lt;IP&gt;:9529/ZidooControlCenter/getModel          (name and model, for the settings page)
+http://&lt;IP&gt;:9529/ZidooMusicControl/v2/getState        (what the device is really doing)</code></pre>
+</section>
+<section id="eversolo-http-api-full-command-reference">
+<h2>Eversolo HTTP API — full command reference</h2>
+<p>The device's own remote-key list, recorded here for reference. It is <strong>not</strong> a list of what the plugin does — the plugin sends only <code>Key.Screen.ON</code> and <code>Key.Screen.OFF</code>, plus <code>setPowerOption</code> for power off, which is a different endpoint from <code>Key.Poweroff</code> and the one the Eversolo app itself uses.</p>
+<table>
+<thead><tr>
+<th>Key</th>
+<th>Function</th>
+</tr></thead>
+<tbody>
+<tr><td><code>Key.Screen.ON</code></td><td>Turn screen on</td></tr>
+<tr><td><code>Key.Screen.OFF</code></td><td>Turn screen off</td></tr>
+<tr><td><code>Key.Screen.Display</code></td><td>Cycle screen display mode</td></tr>
+<tr><td><code>Key.MediaPlay</code></td><td>Play</td></tr>
+<tr><td><code>Key.MediaPause</code></td><td>Pause</td></tr>
+<tr><td><code>Key.MediaPlay.Pause</code></td><td>Toggle play/pause</td></tr>
+<tr><td><code>Key.MediaNext</code></td><td>Next track</td></tr>
+<tr><td><code>Key.MediaPrev</code></td><td>Previous track</td></tr>
+<tr><td><code>Key.VolumeUp</code> / <code>Key.VolumeDown</code></td><td>Volume</td></tr>
+<tr><td><code>Key.Mute</code></td><td>Mute toggle</td></tr>
+<tr><td><code>Key.Poweroff</code></td><td>Power off</td></tr>
+<tr><td><code>Key.Reboot</code></td><td>Reboot</td></tr>
+<tr><td><code>Key.DAC.XMOS</code></td><td>Input: internal player</td></tr>
+<tr><td><code>Key.DAC.BT</code> / <code>Key.DAC.USB</code> / <code>Key.DAC.SPDIF</code> / <code>Key.DAC.COA</code></td><td>Inputs</td></tr>
+<tr><td><code>Key.OUT.XLR</code> / <code>Key.OUT.RCA</code> / <code>Key.OUT.HDMI</code> / <code>Key.OUT.SPDIF</code> / <code>Key.OUT.USB</code></td><td>Outputs</td></tr>
+</tbody></table>
+</section>
+<section id="troubleshooting">
+<h2>Troubleshooting</h2>
+<p><strong>The screen doesn't respond.</strong> Verify the API by hand — paste this into a browser: <code>http://&lt;EVERSOLO_IP&gt;:9529/ZidooControlCenter/RemoteControl/sendkey?key=Key.Screen.OFF</code>. If the screen goes off, the API works and the address is right.</p>
+<p><strong>Settings save but nothing changes.</strong> LMS loads plugin code at startup only, so a new version needs a restart. If a copy is also installed from the plugin repository, that copy shadows a manually installed one — remove one of them so only a single copy is present.</p>
+<p><strong>The plugin isn't in Player Settings.</strong> Check the folder is named exactly <code>EversoloScreenControl</code> under <code>Plugins/</code>, that the plugin is enabled in <em>Settings → Plugins</em>, and that LMS has been restarted since the files were copied.</p>
+<p><strong>Check the logs.</strong> <em>LMS → Settings → Advanced → Logging</em> → set <code>plugin.eversoloscreencontrol</code> to DEBUG.</p>
+</section>
+<section id="license">
+<h2>License</h2>
+<p>MIT — use at your own risk. Not affiliated with Eversolo, Zidoo or Lyrion.</p>
+</section>
+</main>
+
+<footer>
+  <p>Eversolo Screen Control — for Lyrion Music Server — a plugin for Lyrion Music Server ·
+  <a href="https://github.com/SimonArnold002/LMS-Eversolo-Screen-Control">View on GitHub</a></p>
+</footer>
+
+</body>
+</html>
