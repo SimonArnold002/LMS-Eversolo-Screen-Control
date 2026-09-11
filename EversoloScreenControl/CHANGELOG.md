@@ -12,6 +12,22 @@ Version numbering follows [Semantic Versioning](https://semver.org/):
 
 ---
 
+## [2.2.1] — 2026-09-11
+
+Docs only — no plugin code changed.
+
+### Documentation
+- `README.md` moved out of `EversoloScreenControl/` to the repo root, as the
+  single source for the generated docs page. Regenerated `README.html` and
+  `index.html` in the house style via `tools/make_readme_html.py`, picking up
+  the 2.2.1 version badge.
+- `README.md` is no longer shipped inside `EversoloScreenControl.zip`.
+- Wake-on-LAN remains deliberately undocumented: once the Eversolo powers off,
+  its LMS player disappears, so there is no button left in LMS to wake it with.
+  The WoL code and `tools/t_power.pl` are unchanged.
+
+---
+
 ## [2.2.0] — 2026-09-10
 
 Everything below has accumulated since 1.0.3. The plugin gained the ability to
