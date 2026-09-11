@@ -75,6 +75,16 @@ Two constraints fall out of that and both are user-visible:
   whenever it identifies a device, and the settings page says so when the MAC is
   still unknown — otherwise "power on does nothing" has no visible cause.
 
+**Wake-on-LAN is DELIBERATELY UNDOCUMENTED (2026-09-11).** The code still sends
+the packet and `t_power.pl` still pins it byte for byte — nothing was removed. But
+the public `README.md` describes power control as **one-way, off only**, and does
+not mention WoL, the wired-only constraint or the MAC at all. Reason: once the
+Eversolo is off its LMS player disappears, so there is **no button left in LMS to
+press** — the wake path has no route in from the UI, and documenting it only sets
+up a feature the user cannot reach. Do NOT report the README as missing the WoL
+section, and do not "restore" it; if a route in ever exists (a standalone wake
+action, a settings-page button), that is what makes it documentable again.
+
 Power is opt-in per player (`power_control`, default off) because ticking it
 hands a device's mains state to a player button.
 
@@ -309,13 +319,24 @@ EversoloScreenControl/
 ├── install.xml          # LMS plugin metadata + <version> (creator: CrystalGipsy)
 ├── strings.txt          # Localised UI strings (PLUGIN_EVERSOLO_*)
 ├── CHANGELOG.md         # Semantic-versioned history
-├── README.md            # Install + usage docs
 └── HTML/EN/plugins/EversoloScreenControl/
     ├── settings/        # Settings page template(s)
     └── html/images/     # icon.png + sized/themed variants (64/128/256, light/dark)
 
+README.md                # Install + usage docs — at the ROOT, like every other repo here,
+                         # and NOT part of the zip. The source the docs page is built from.
+README.html              # Generated: the GitHub Pages docs page (house style)
+index.html               # Generated: a meta-refresh redirect to README.html
 tools/                   # Standalone Perl test suites (no LMS, no device) — see Tests
+                         # plus make_readme_html.py, the docs generator
 ```
+
+**Docs page.** `python3 tools/make_readme_html.py` from the repo root rebuilds
+`README.html` + `index.html` from `README.md`. The version badge is read live from
+`install.xml`, so a regen always shows the current release and nothing is hardcoded.
+The "Features at a glance" table becomes the card grid; every other table stays a
+table. Keep each list item on ONE line — the converter treats a wrapped continuation
+line as a new paragraph and breaks the list.
 
 ## Tests
 
