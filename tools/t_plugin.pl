@@ -27,11 +27,14 @@ sub is {
     ok($got eq $want, $what . ($got eq $want ? '' : "  [got '$got', want '$want']"));
 }
 
-sub WEBUI   () { 0 }
+# WEBUI on: the Home tile is only offered with a web UI.  Nothing here calls
+# initPlugin, which is the other thing WEBUI gates.
+sub WEBUI   () { 1 }
 sub INFOLOG () { 0 }
 sub DEBUGLOG() { 0 }
 
-our (%PREFS, %DEFAULTS, @CLIENTS, @TIMERS, @HTTP_GET, @STATE_CALLBACKS, @POWER_OFF);
+our (%PREFS, %DEFAULTS, %ONCHANGE, @CLIENTS, @TIMERS, @HTTP_GET, @STATE_CALLBACKS, @POWER_OFF,
+     @REGISTERED, @IDENTIFY, $IDENTIFY_INLINE, @WAKES);
 
 {
     package Stub::ClientPrefs;
@@ -42,9 +45,13 @@ our (%PREFS, %DEFAULTS, @CLIENTS, @TIMERS, @HTTP_GET, @STATE_CALLBACKS, @POWER_O
             if exists $main::PREFS{$self->{ns}}{$self->{id}}{$key};
         return $main::DEFAULTS{$self->{ns}}{$key};
     }
+    # As LMS's Base::set: store, then run the namespace's change callbacks for
+    # that pref, handing over the LIVE client or undef when it is not connected.
     sub set {
         my ($self, $key, $value) = @_;
         $main::PREFS{$self->{ns}}{$self->{id}}{$key} = $value;
+        my $client = Slim::Player::Client::getClient($self->{id});
+        $_->($key, $value, $client) for @{ $main::ONCHANGE{$self->{ns}}{$key} || [] };
         return ($value, 1);
     }
 
@@ -52,6 +59,23 @@ our (%PREFS, %DEFAULTS, @CLIENTS, @TIMERS, @HTTP_GET, @STATE_CALLBACKS, @POWER_O
     sub new { bless { ns => $_[1] }, $_[0] }
     sub client { Stub::ClientPrefs->new($_[0]->{ns}, $_[1]->id) }
     sub setPlayerDefault { $main::DEFAULTS{$_[0]->{ns}}{$_[1]} = $_[2] }
+    sub setChange {
+        my ($self, $cb, @names) = @_;
+        push @{ $main::ONCHANGE{$self->{ns}}{$_} }, $cb for @names;
+    }
+    # As LMS's: EVERY player with stored prefs, connected or not.  Unlike LMS
+    # it applies the player defaults, which only makes the stub stricter (a
+    # default of 0 reads back as 0, not undef).
+    sub allClients {
+        my $ns = $_[0]->{ns};
+        return map { Stub::ClientPrefs->new($ns, $_) } sort keys %{ $main::PREFS{$ns} || {} };
+    }
+
+    # LMS's own constructor for a player that may no longer exist: takes a
+    # plain id, and hasPrefs says whether the namespace holds any for it.
+    package Slim::Utils::Prefs::Client;
+    sub hasPrefs { exists $main::PREFS{ $_[1]->{ns} }{ $_[2] } ? 1 : 0 }
+    sub new      { Stub::ClientPrefs->new( $_[1]->{ns}, $_[2] ) }
 
     package Slim::Utils::Prefs;
     sub import {
@@ -135,6 +159,7 @@ our (%PREFS, %DEFAULTS, @CLIENTS, @TIMERS, @HTTP_GET, @STATE_CALLBACKS, @POWER_O
     package Slim::Control::Request;
     sub subscribe { }
     sub unsubscribe { }
+    sub addDispatch { }
 
     package Stub::Request;
     sub new { bless { client => $_[1], value => $_[2] }, $_[0] }
@@ -142,6 +167,36 @@ our (%PREFS, %DEFAULTS, @CLIENTS, @TIMERS, @HTTP_GET, @STATE_CALLBACKS, @POWER_O
     sub getParam { $_[1] eq '_newvalue' ? $_[0]->{value} : undef }
     sub isCommand { 0 }
     sub getRequestString { '' }
+
+    # The `client forget` notification as LMS delivers it: AFTER forgetClient,
+    # so the id is on the request and ->client (a getClient lookup) is undef.
+    package Stub::ForgetRequest;
+    sub new      { bless { id => $_[1] }, $_[0] }
+    sub clientid { $_[0]->{id} }
+    sub client   { undef }
+
+    # A CLI request with LMS's completion semantics, which are the whole point
+    # of the async tests: setStatusDone calls executeDone itself when the status
+    # is "processing" (3), and execute() calls it again after the function
+    # returns unless the status is STILL processing.  `done` counts executeDone.
+    package Stub::Query;
+    sub new { my ($c, %p) = @_; bless { params => {%p}, status => 1, done => 0, result => {} }, $c }
+    sub getParam            { $_[0]->{params}{$_[1]} }
+    sub addResult           { $_[0]->{result}{$_[1]} = $_[2] }
+    sub addResultLoop       { $_[0]->{result}{$_[1]}[$_[2]]{$_[3]} = $_[4] }
+    sub setStatusProcessing { $_[0]->{status} = 3 }
+    sub setStatusBadParams  { $_[0]->{status} = 102 }
+    sub setStatusDone {
+        my $was = $_[0]->{status};
+        $_[0]->{status} = 10;
+        $_[0]->{done}++ if $was == 3;
+    }
+    sub execute {
+        my ($self, $func) = @_;
+        $func->($self);
+        $self->{done}++ unless $self->{status} == 3;
+        return $self;
+    }
 }
 
 {
@@ -149,6 +204,20 @@ our (%PREFS, %DEFAULTS, @CLIENTS, @TIMERS, @HTTP_GET, @STATE_CALLBACKS, @POWER_O
     sub deviceState { push @main::STATE_CALLBACKS, $_[2] }
     sub setPowerOption { push @main::POWER_OFF, [$_[0], $_[1], $_[2]] }
     sub normaliseMac { $_[0] }
+    # getModel: pending unless $IDENTIFY_INLINE, which answers "up" at once.
+    sub identify {
+        my ($ip, $port, $cb) = @_;
+        return $cb->({ ip => $ip }) if $main::IDENTIFY_INLINE;
+        push @main::IDENTIFY, [ $ip, $cb ];
+    }
+}
+
+{
+    package Slim::Utils::Strings;
+    sub string { $_[0] }
+
+    package Plugins::MaterialSkin::Plugin;
+    sub registerCustomAction { push @main::REGISTERED, [ @_ ] }
 }
 
 $INC{$_} = 1 for qw(
@@ -220,6 +289,215 @@ print "\n-- native LMS syncPower targets --\n";
     $P->can('_powerCallback')->(Stub::Request->new($master, 0));
     is(scalar @POWER_OFF, 1, 'only the syncPower buddy with plugin control is acted on');
     is($POWER_OFF[0][0], '192.168.1.20', 'the synced buddy powers down its own Eversolo');
+}
+
+# ---------------------------------------------------------------------------
+#  The power page and its Home tile.
+# ---------------------------------------------------------------------------
+my $OPTED = { enabled => 1, power_control => 1, home_power => 1 };
+
+print "\n-- the Home tile follows the opt-in --\n";
+{
+    %PREFS = ();
+    @CLIENTS = ();
+    @REGISTERED = ();
+    my $sync = $P->can('_syncHomeTile');
+
+    $PREFS{'plugin.eversoloscreencontrol'}{'p1'} = { enabled => 1, power_control => 1, home_power => 0 };
+    $sync->();
+    is(scalar @REGISTERED, 0, 'nobody opted in: no tile is registered');
+
+    $PREFS{'plugin.eversoloscreencontrol'}{'p1'}{home_power} = 1;
+    $sync->();
+    is(scalar @REGISTERED, 1, 'opting in registers exactly one tile');
+    my ($section, $tile) = @{ $REGISTERED[0] || [] };
+    is($section, 'pinned', 'in the section Material turns into Home tiles');
+    is($tile && $tile->{iframe}, '/eversolopower', 'opening the power page inline');
+
+    $sync->();
+    is(scalar @REGISTERED, 1, 'syncing again does not push a second tile - Material cannot de-dupe');
+
+    $PREFS{'plugin.eversoloscreencontrol'}{'p1'}{home_power} = 0;
+    $sync->();
+    ok($tile && !exists $tile->{iframe}, 'opting out withdraws the tile: no iframe, so loadCustomPinned skips it');
+    is(scalar @REGISTERED, 1, 'without registering anything new');
+
+    $PREFS{'plugin.eversoloscreencontrol'}{'p1'}{home_power} = 1;
+    $sync->();
+    is($tile && $tile->{iframe}, '/eversolopower', 'opting back in restores the SAME tile');
+    is(scalar @REGISTERED, 1, 'still one registration');
+
+    $PREFS{'plugin.eversoloscreencontrol'}{'p1'}{power_control} = 0;
+    $sync->();
+    ok($tile && !exists $tile->{iframe}, 'home_power without power_control does not offer the tile');
+}
+
+print "\n-- which devices the page lists --\n";
+{
+    %PREFS = ();
+    @CLIENTS = ();     # every player is DISCONNECTED - the case the page is for
+
+    my $ns = 'plugin.eversoloscreencontrol';
+    $PREFS{$ns}{a} = { %$OPTED, eversolo_ip => ' 192.168.1.197 ', eversolo_mac => '800a805e2b7b' };
+    $PREFS{$ns}{b} = { %$OPTED, eversolo_ip => '192.168.1.197', eversolo_name => 'DMP-A8 (ManCave)' };
+    $PREFS{$ns}{c} = { %$OPTED, eversolo_ip => '' };
+    $PREFS{$ns}{d} = { enabled => 1, power_control => 1, home_power => 0, eversolo_ip => '192.168.1.50' };
+    $PREFS{$ns}{e} = { %$OPTED, eversolo_ip => '192.168.1.60' };
+
+    my @d = $P->can('_powerDevices')->();
+    is(scalar @d, 2, 'disconnected players are listed; no address and not opted in are not');
+    my ($mancave) = grep { $_->{ip} eq '192.168.1.197' } @d;
+    ok($mancave, 'two players on one device list it once, by address');
+    is($mancave && $mancave->{mac},  '800a805e2b7b',     'the MAC one player learned is kept');
+    is($mancave && $mancave->{name}, 'DMP-A8 (ManCave)', 'and the name the other learned');
+    my ($bare) = grep { $_->{ip} eq '192.168.1.60' } @d;
+    is($bare && $bare->{name}, '192.168.1.60', 'a device never identified is named by its address');
+}
+
+print "\n-- eversolopower status: async completion --\n";
+{
+    %PREFS = ();
+    @CLIENTS = ();
+    my $ns = 'plugin.eversoloscreencontrol';
+    $PREFS{$ns}{a} = { %$OPTED, eversolo_ip => '192.168.1.197', eversolo_mac => '800a805e2b7b' };
+    $PREFS{$ns}{b} = { %$OPTED, eversolo_ip => '192.168.1.60' };
+
+    my $status = $P->can('_powerStatusQuery');
+
+    @IDENTIFY = ();
+    $IDENTIFY_INLINE = 0;
+    my $q = Stub::Query->new->execute($status);
+    is(scalar @IDENTIFY, 2, 'every listed device is asked, in parallel');
+    is($q->{status}, 3, 'the request waits for them');
+    is($q->{done}, 0, 'and has not completed');
+
+    my %cb = map { $_->[0] => $_->[1] } @IDENTIFY;
+    $cb{'192.168.1.197'}->({ ip => '192.168.1.197' });
+    is($q->{done}, 0, 'one answer is not enough');
+    $cb{'192.168.1.60'}->(undef);
+    is($q->{done}, 1, 'the last answer completes it exactly once');
+
+    my %row = map { $_->{id} => $_ } @{ $q->{result}{devices_loop} || [] };
+    is($row{'192.168.1.197'}{state},   'on',  'a device that answers is on');
+    is($row{'192.168.1.60'}{state},    'off', 'a device that does not is off');
+    is($row{'192.168.1.197'}{canwake}, 1,     'a known MAC can be woken');
+    is($row{'192.168.1.60'}{canwake},  0,     'an unknown one cannot');
+
+    # The trap: answers that arrive INSIDE the function.  Declaring processing
+    # before the loop would make LMS run executeDone twice.
+    $IDENTIFY_INLINE = 1;
+    $q = Stub::Query->new->execute($status);
+    is($q->{done}, 1, 'answers arriving synchronously still complete it exactly once');
+    $IDENTIFY_INLINE = 0;
+
+    %PREFS = ();
+    $q = Stub::Query->new->execute($status);
+    is($q->{result}{count}, 0, 'no opted-in device: an empty answer');
+    is($q->{done}, 1, 'completed at once');
+}
+
+print "\n-- eversolopower set --\n";
+{
+    no warnings 'redefine';
+    local *Plugins::EversoloScreenControl::Plugin::_sendWake = sub { push @WAKES, [ @_ ]; 1 };
+
+    %PREFS = ();
+    my $ns = 'plugin.eversoloscreencontrol';
+    my $driver = Stub::Client->new('driver', mode => 'stop');
+    @CLIENTS = ($driver);
+    $PREFS{$ns}{driver} = { %$OPTED, eversolo_ip => '192.168.1.197', eversolo_mac => '800a805e2b7b',
+                            eversolo_port => 9529, screen_off_delay => 30 };
+    $PREFS{$ns}{other}  = { enabled => 1, power_control => 1, home_power => 0,
+                            eversolo_ip => '192.168.1.50', eversolo_mac => '001122334455' };
+
+    my $set    = $P->can('_powerSetCommand');
+    my $status = $P->can('_powerStatusQuery');
+
+    @WAKES = (); @POWER_OFF = ();
+    my $q = Stub::Query->new(id => '192.168.1.50', to => 'on')->execute($set);
+    is($q->{status}, 102, 'a device not opted in cannot be pressed');
+    $q = Stub::Query->new(id => '10.0.0.1', to => 'off')->execute($set);
+    is($q->{status}, 102, 'nor can an address no player names');
+    $q = Stub::Query->new(id => '192.168.1.197', to => 'toggle')->execute($set);
+    is($q->{status}, 102, 'on and off are the only verbs');
+    is(scalar(@WAKES) + scalar(@POWER_OFF), 0, 'and none of those sent anything');
+
+    $q = Stub::Query->new(id => '192.168.1.197', to => 'on')->execute($set);
+    is(scalar @WAKES, 1, 'on sends one wake');
+    is($WAKES[0][0], '800a805e2b7b', 'to the MAC read from the prefs');
+    is($WAKES[0][1], '192.168.1.197', 'with the device address for the directed broadcast');
+    is($q->{result}{state}, 'waking', 'and answers waking');
+
+    @IDENTIFY = ();
+    my $s = Stub::Query->new->execute($status);
+    $IDENTIFY[0][1]->(undef);
+    is($s->{result}{devices_loop}[0]{state}, 'waking', 'still booting: waking, not off');
+    @IDENTIFY = ();
+    $s = Stub::Query->new->execute($status);
+    $IDENTIFY[0][1]->({});
+    is($s->{result}{devices_loop}[0]{state}, 'on', 'once it answers: on');
+    @IDENTIFY = ();
+    $s = Stub::Query->new->execute($status);
+    $IDENTIFY[0][1]->(undef);
+    is($s->{result}{devices_loop}[0]{state}, 'off', 'and the press is forgotten once it agreed');
+
+    # Off: the device, and every connected player's pending screen-off for it.
+    @TIMERS = ();
+    $P->can('_onPauseOrStop')->($driver);
+    is(scalar @TIMERS, 1, 'the driving player has a screen-off pending');
+    $q = Stub::Query->new(id => '192.168.1.197', to => 'off')->execute($set);
+    is(scalar @POWER_OFF, 1, 'off sends one power-off');
+    is(join(' ', @{ $POWER_OFF[0] || [] }), '192.168.1.197 9529 poweroff', 'to the stored address and port');
+    is(scalar @TIMERS, 0, 'and the pending screen-off is dropped, as a player power-off does');
+    is($q->{result}{state}, 'stopping', 'answering stopping');
+
+    @IDENTIFY = ();
+    $s = Stub::Query->new->execute($status);
+    $IDENTIFY[0][1]->({});
+    is($s->{result}{devices_loop}[0]{state}, 'stopping', 'still answering while it shuts down: stopping');
+}
+
+print "\n-- a player removed from LMS takes its device off the power page --\n";
+{
+    my $ns = 'plugin.eversoloscreencontrol';
+    %PREFS = ();
+    %ONCHANGE = ();
+    @CLIENTS = ();     # both players are gone from LMS
+
+    # The wiring initPlugin makes, so the tile follows through the real carrier.
+    Stub::PrefsRoot->new($ns)->setChange( $P->can('_syncHomeTile'), qw(home_power power_control enabled) );
+
+    $PREFS{$ns}{gone} = { %$OPTED, eversolo_ip => '192.168.1.197', eversolo_mac => '800a805e2b7b' };
+    $PREFS{$ns}{kept} = { %$OPTED, eversolo_ip => '192.168.1.60' };
+
+    $P->can('_syncHomeTile')->();
+    my $tile = @REGISTERED ? $REGISTERED[-1][1] : undef;
+    is($tile && $tile->{iframe}, '/eversolopower', 'the tile is offered while both are opted in');
+
+    my $forget = $P->can('_onForget');
+    $forget->( Stub::ForgetRequest->new('gone') );
+    is($PREFS{$ns}{gone}{home_power}, 0, 'forgetting a player clears its opt-in');
+    my @ips = map { $_->{ip} } $P->can('_powerDevices')->();
+    is("@ips", '192.168.1.60', 'so its device leaves the power page');
+    is($PREFS{$ns}{gone}{eversolo_ip}, '192.168.1.197', 'its other settings stay, as LMS keeps them');
+    is($PREFS{$ns}{gone}{power_control}, 1, 'power control included');
+    ok($tile && $tile->{iframe}, 'another player still opted in keeps the tile');
+
+    $forget->( Stub::ForgetRequest->new('kept') );
+    ok($tile && !exists $tile->{iframe}, 'the last one forgotten withdraws the tile, through the pref change');
+
+    $forget->( Stub::ForgetRequest->new('never-seen') );
+    ok(!exists $PREFS{$ns}{'never-seen'}, 'forgetting a player the plugin never knew writes nothing');
+}
+
+print "\n-- a wake needs a MAC --\n";
+{
+    %PREFS = ();
+    @CLIENTS = ();
+    @POWER_OFF = ();
+    $PREFS{'plugin.eversoloscreencontrol'}{x} = { %$OPTED, eversolo_ip => '192.168.1.70' };
+    my $q = Stub::Query->new(id => '192.168.1.70', to => 'on')->execute($P->can('_powerSetCommand'));
+    is($q->{status}, 102, 'the REAL _sendWake refuses a device with no MAC, and the press is refused');
 }
 
 print "\n$pass passed, $fail failed\n";

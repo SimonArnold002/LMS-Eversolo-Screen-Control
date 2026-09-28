@@ -37,6 +37,19 @@
             </td>
         </tr>
 
+        <!-- Put this device on the power page, and the page on Material's Home
+             screen: the way back in once the device is off and its player gone. -->
+        <tr>
+            <td class="prefHead">[% "PLUGIN_EVERSOLO_HOME_POWER" | string %]</td>
+            <td class="prefBody">
+                <input type="hidden" name="pref_home_power" value="0" />
+                <label><input type="checkbox" name="pref_home_power" value="1"
+                    [% IF prefs.home_power %]checked="checked"[% END %] />
+                    [% "PLUGIN_EVERSOLO_TICK" | string %]</label>
+                <span class="prefDesc">[% "PLUGIN_EVERSOLO_HOME_POWER_DESC" | string %]</span>
+            </td>
+        </tr>
+
         <!-- The Eversolo's address, and what the device says it is called. -->
         <tr>
             <td class="prefHead">[% "PLUGIN_EVERSOLO_IP" | string %]</td>

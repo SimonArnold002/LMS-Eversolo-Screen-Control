@@ -85,6 +85,11 @@ up a feature the user cannot reach. Do NOT report the README as missing the WoL
 section, and do not "restore" it; if a route in ever exists (a standalone wake
 action, a settings-page button), that is what makes it documentable again.
 
+**2026-09-28: that route now exists on `dev`** — the power page below. Built and
+suite-tested, NOT yet verified live. The README section is written at the merge
+to `main` like every other README change, not on a dev build, so the README is
+still correct to omit it until then.
+
 Power is opt-in per player (`power_control`, default off) because ticking it
 hands a device's mains state to a player button.
 
@@ -96,6 +101,70 @@ each `syncedWith` buddy whose server-side `syncPower` is on — and re-reads the
 plugin preferences of each one. Every player still decides for itself: a buddy
 with `enabled` or `power_control` off is skipped, and a buddy with its own
 Eversolo powers that device down rather than the pressed player's.
+
+### The power page and its Material Home tile (dev, 2026-09-28, unverified live)
+
+**Why it exists:** once an Eversolo is off its LMS player disappears, and with it
+the only button that ever sent the wake packet. The page needs no player.
+
+- **Opt-in per player** — `home_power` (default 0), a third checkbox on the
+  player's settings page ("Power button on Material's Home screen"). A player
+  qualifies with `enabled` + `power_control` + `home_power`. Simon's call: the
+  tile must be something a user asks for, not something every install gets.
+- **`Power.pm`** — a raw handler at `/eversolopower` (the path is owned by
+  `Plugin.pm` and handed to `init`; the module calls nothing in `Plugin.pm`). One
+  card per device, one button: on → two taps to switch off (the first arms it for
+  4s — NOT `confirm()`, which an embedded webview may never show), off → one tap
+  to wake. States: `on`, `off`, `waking`, `stopping`. Polls every 5s, every 2s
+  while a press is settling, and not at all while the page is hidden.
+- **The heredoc is `<<'HTML'`, NOT interpolating.** Labels go in by `%%TOKEN%%`
+  substitution, HTML-escaped, and reach the script as `data-*` on `<body>`. This
+  sidesteps the whole Perl-eats-the-JS-backslash trap HQPlayer Bridge's `Live.pm`
+  documents. Keep it that way.
+- **Two CLI commands, server-level** (no player): `eversolopower status` →
+  `count`, `devices_loop[{id,name,state,canwake}]`; `eversolopower set id:<ip>
+  to:on|off`. A press names a device and the address, port and MAC are read back
+  from the prefs — nothing from the page is trusted as an address.
+- **Devices come from `$prefs->allClients`**, which returns the stored prefs of
+  EVERY player the namespace has seen, connected or not (read-only, not
+  migrated). A device is its address, so two players on one Eversolo list it
+  once, taking the MAC and name from whichever player learned them.
+- **On = answers `getModel`.** An Eversolo that is off has nothing listening at
+  all, so "no answer" is off. A press is believed over the device's answer for
+  `WAKE_GRACE` (120s) / `STOP_GRACE` (60s) — `%powerPending`, keyed by address —
+  so a booting device reads "switching on", not "off".
+- **ASYNC ORDER in `_powerStatusQuery`.** LMS's `setStatusDone` calls
+  `executeDone` when the status is processing, and `execute()` calls it again
+  unless the status is STILL processing — so a probe answering synchronously
+  after `setStatusProcessing` fires the callback TWICE. Processing is declared
+  after the loop, only if something is outstanding. `t_plugin.pl` pins it with a
+  stub that has LMS's semantics.
+- **The Home tile** is a `pinned` custom action with `iframe` (inline dialog, like
+  HQPlayer Bridge's), registered from `_syncHomeTile` at `postinitPlugin` and on a
+  `setChange` of `home_power`/`power_control`/`enabled`. Material's registry
+  PUSHES with no unregister and no de-dupe, so the action hashref is kept in
+  `$homeTile` and registered at most once per server run (never reset in
+  shutdown); withdrawing it DELETES its `iframe`, because `loadCustomPinned` skips
+  an action with neither `iframe` nor `weblink`. Material fetches the registry per
+  page load (`material-skin plugin-actions`), so a change shows after a Material
+  refresh. A tile already on a Home screen stays until the user unpins it —
+  Material only ever adds tiles — and a tap on it then shows the "none" message.
+- **Off from the page** also drops the pending screen-off of every connected
+  player whose `eversolo_ip` is that device, as a player's own power-off does.
+- **A player REMOVED from LMS takes its device off the page** (`_onForget`,
+  subscribed to `client forget`; Simon's call 2026-09-28 — "you can remove
+  players from LMS and then that would not want to be stuck on"). LMS's
+  `forgetClient` drops the connection and KEEPS every client pref, so without
+  this the forgotten player's device stayed listed for ever, with no settings
+  page left to untick it. Only `home_power` is cleared: the address and power
+  settings stay as LMS keeps them, for a player that comes back. The clear
+  fires the `setChange` callback, which withdraws the tile if it was the last.
+  **Keyed on `$request->clientid`, NEVER `->client`**: the notification arrives
+  after `forgetClient`, so `->client` is always undef — HQPlayer Bridge shipped
+  exactly that bug (its ledger, `_onForget could never fire`). `hasPrefs` guards
+  it, so forgetting a player the plugin never knew writes nothing.
+- **Material's only reader of `pinned` is `loadCustomPinned`** (grepped
+  2026-09-28, JS and Plugin.pm), so an action stripped of `iframe` is inert.
 
 ### Address resolution
 
@@ -197,9 +266,11 @@ looked like a settings bug. It was a dead handler. The page now depends on
 group that used to sit here (`eversolo_choice`, one row per discovered device
 plus a `__manual__` row, arbitrated by a `_picker` sub) went with the discovery
 code on 2026-08-30 and is not coming back — with nothing to discover there is
-nothing to pick from. The page's five fields are `pref_eversolo_ip`,
-`pref_eversolo_port`, `pref_screen_off_delay` and the two checkboxes
-`pref_enabled` and `pref_power_control`; every one is range-checked in `handler`
+nothing to pick from. The page's six fields are `pref_eversolo_ip`,
+`pref_eversolo_port`, `pref_screen_off_delay` and the three checkboxes
+`pref_enabled`, `pref_power_control` and `pref_home_power` (the power page
+opt-in — saved by this page, acted on by `Plugin.pm` through a pref change
+callback, so this module still calls nothing there); every one is range-checked in `handler`
 and falls back to its default rather than storing a value the plugin would have
 to defend against later (port to 9529, delay to 30).
 
@@ -316,6 +387,7 @@ EversoloScreenControl/
 ├── Plugin.pm            # Core logic: event subscriptions, ON/OFF, _resolveIP(), timers
 ├── Discovery.pm         # Asks ONE known address who it is (getModel/getState); no scanning
 ├── PlayerSettings.pm    # Per-player settings page (needsClient => 1)
+├── Power.pm             # The power page (/eversolopower), a raw handler - no player needed
 ├── install.xml          # LMS plugin metadata + <version> (creator: CrystalGipsy)
 ├── strings.txt          # Localised UI strings (PLUGIN_EVERSOLO_*)
 ├── CHANGELOG.md         # Semantic-versioned history
@@ -356,7 +428,7 @@ from the repo root:
   answers a broadcast.
 
 - `perl tools/t_settings.pl` — **runs the real settings handler end to end**
-  (54 assertions). It stubs the LMS pieces `PlayerSettings.pm` touches, loads
+  (62 assertions). It stubs the LMS pieces `PlayerSettings.pm` touches, loads
   the actual module, and drives `handler()` through every state a user puts it
   in, asserting each invariant AND that the handler **ran to completion** each
   time — `SUPER_RAN` proves it, because the SUPER call is the handler's last
@@ -379,6 +451,24 @@ from the repo root:
   race or a cross-player interaction, so each passes trivially against code that
   does nothing — the assertions check that the unguarded path WOULD have acted.
   `ESC_PLUGIN` points it at a mutated copy.
+
+  Since 2026-09-28 it also drives the power page's server half (59 assertions
+  in all; the forget path through the real `setChange` carrier, with a stub
+  request whose `->client` is undef as LMS's is): the Home tile registered once and only on opt-in, withdrawn and
+  restored in place; the device list built from DISCONNECTED players' prefs and
+  de-duplicated by address; `eversolopower status` completing exactly once
+  whether its probes answer later or inline (the stub `Stub::Query` carries
+  LMS's real `setStatusDone`/`execute` semantics — that is what makes the
+  double-callback trap testable); and `eversolopower set` refusing anything not
+  opted in, waking by the stored MAC, and holding `waking`/`stopping` until the
+  device agrees.
+
+- `perl tools/t_page.pl` — renders the REAL `Power.pm` page (19 assertions)
+  against the REAL `strings.txt`: every `%%TOKEN%%` filled, every label the
+  script reads present on `<body>`, labels escaped out of their attribute, the
+  body sent as UTF-8 octets with a status code set, and the two command names the
+  page calls matching the ones `Plugin.pm` registers. `ESC_POWER` points it at a
+  mutated copy.
 
 ## Versioning (Semantic Versioning)
 

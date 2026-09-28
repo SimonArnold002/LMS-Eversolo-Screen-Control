@@ -79,6 +79,43 @@ $prefs->setPlayerDefault('eversolo_mac',     '');
 $prefs->setPlayerDefault('eversolo_port',    9529);
 $prefs->setPlayerDefault('screen_off_delay', 30);
 
+# Put this player's Eversolo on the power page, and the page on Material's Home
+# screen.  OFF by default: the tile appears only once a user asks for it, and it
+# only does anything for a player that also has power_control on.  See the
+# "Power page" section below for why a page exists at all.
+$prefs->setPlayerDefault('home_power',       0);
+
+# ---------------------------------------------------------------------------
+#  Power page state.  NOT per player, and deliberately so: the page exists for
+#  the moment a device is off and its player has gone from LMS, so it is keyed
+#  by the DEVICE's address, never by a client.
+# ---------------------------------------------------------------------------
+
+# The path of the power page (Power.pm).  Owned here and handed to Power->init,
+# so the page module needs nothing from this one - see the settings-page trap in
+# CLAUDE.md.
+use constant POWER_PAGE_PATH => '/eversolopower';
+
+# How long a press is believed over the device's own answer.  A woken DMP-A8
+# takes the better part of a minute to answer HTTP, and a powered-off one keeps
+# answering for a few seconds while it shuts down; inside these windows the page
+# says "switching on/off" rather than contradicting the button just pressed.
+use constant WAKE_GRACE => 120;
+use constant STOP_GRACE => 60;
+
+# { device ip => { to => 'on'|'off', until => epoch } }
+my %powerPending;
+
+# The action handed to Material's registerCustomAction, kept so it can be
+# withdrawn later.  Material has no unregister and no de-dupe - it PUSHES - so
+# this is registered at most once per server run and afterwards only edited in
+# place: Material serialises its registry on every `material-skin
+# plugin-actions` request, and loadCustomPinned skips an action with neither
+# `iframe` nor `weblink`, so deleting `iframe` takes the tile off offer.
+# NOT cleared in shutdownPlugin: a re-init in the same process must reuse it,
+# or it would push a second tile.
+my $homeTile;
+
 # Per-player screen-state tracker  { client_id => 0|1 }.  A player absent from
 # this hash has an UNKNOWN screen state — which is exactly where every player
 # starts after a server restart, and why the reconcile pass asserts the screen
@@ -126,11 +163,26 @@ sub initPlugin {
         'Eversolo Screen Control v' . PLUGIN_VERSION . ' starting...'
     );
 
-    # Register the per-player settings page
+    # Register the per-player settings page, and the power page.
     if (main::WEBUI) {
         require Plugins::EversoloScreenControl::PlayerSettings;
         Plugins::EversoloScreenControl::PlayerSettings->new;
+
+        require Plugins::EversoloScreenControl::Power;
+        Plugins::EversoloScreenControl::Power->init(POWER_PAGE_PATH);
     }
+
+    # What the power page polls and presses.  Server-level (no player): the
+    # player is exactly what is missing when a device needs waking.
+    Slim::Control::Request::addDispatch(
+        [ 'eversolopower', 'status' ], [ 0, 1, 1, \&_powerStatusQuery ] );
+    Slim::Control::Request::addDispatch(
+        [ 'eversolopower', 'set' ],    [ 0, 0, 1, \&_powerSetCommand ] );
+
+    # Offer or withdraw the Home tile the moment a player's settings change it.
+    # Fires for client prefs too: Base::set reads the callbacks off the
+    # namespace root.
+    $prefs->setChange( \&_syncHomeTile, qw(home_power power_control enabled) );
 
     # Subscribe to playback STATE changes only (all players — we filter
     # per-player inside the callback).  The second filter array restricts us
@@ -143,6 +195,9 @@ sub initPlugin {
 
     # The player's power button, for players that opted into power control.
     Slim::Control::Request::subscribe( \&_powerCallback, [['power']] );
+
+    # A player REMOVED from LMS takes its power page entry with it - see _onForget.
+    Slim::Control::Request::subscribe( \&_onForget, [['client'], ['forget']] );
 
     # Bring every enabled player's screen into line with what it is actually
     # doing, then keep checking.  Without this a player that was stopped while
@@ -182,9 +237,17 @@ sub shutdownPlugin {
     %lastElapsed       = ();
     %playbackRevision  = ();
     %warnedPlaceholder = ();
+    %powerPending      = ();
 
     Slim::Control::Request::unsubscribe(\&_playbackCallback);
     Slim::Control::Request::unsubscribe(\&_powerCallback);
+    Slim::Control::Request::unsubscribe(\&_onForget);
+}
+
+# After every plugin's initPlugin, so Material's registry exists to be called.
+sub postinitPlugin {
+    _syncHomeTile();
+    return;
 }
 
 
@@ -482,13 +545,26 @@ sub _wakeDevice {
         return;
     }
 
+    _sendWake( $mac, _resolveIP($client), $name, 'player powered on' );
+
+    return;
+}
+
+# The packet itself, apart from any player: the power page wakes a device whose
+# player is not in LMS at all.  $ip only picks the directed broadcast; the MAC is
+# what the device answers to.  Returns 1 once the packet has gone out.
+sub _sendWake {
+    my ( $mac, $ip, $name, $why ) = @_;
+
+    $mac = Plugins::EversoloScreenControl::Discovery::normaliseMac($mac) or return 0;
+
     my $packet = magicPacket($mac);
 
     my $sock = IO::Socket::INET->new( Proto => 'udp', Blocking => 0 );
 
     if ( !$sock ) {
         $log->warn("Eversolo [$name]: could not open a socket to wake the device - $!");
-        return;
+        return 0;
     }
 
     setsockopt( $sock, Socket::SOL_SOCKET(), Socket::SO_BROADCAST(), 1 );
@@ -496,7 +572,7 @@ sub _wakeDevice {
     my @targets = ('255.255.255.255');
 
     # The device's own subnet, which is the one that actually has to carry it.
-    my $ip = _resolveIP($client) || '';
+    $ip = '' unless defined $ip;
     if ( $ip =~ /^(\d+\.\d+\.\d+)\.\d+$/ ) {
         unshift @targets, "$1.255";
     }
@@ -511,9 +587,9 @@ sub _wakeDevice {
 
     close $sock;
 
-    $log->info("Eversolo [$name]: player powered on — sent Wake-on-LAN to $mac");
+    $log->info("Eversolo [$name]: $why — sent Wake-on-LAN to $mac");
 
-    return;
+    return 1;
 }
 
 # Six 0xFF bytes, then the MAC sixteen times: 102 bytes.  Separate so it can be
@@ -529,6 +605,267 @@ sub magicPacket {
     my $target = pack( 'H12', $mac );
 
     return ( "\xFF" x 6 ) . ( $target x 16 );
+}
+
+# ---------------------------------------------------------------------------
+#  The power page: a power button for a device whose player has gone.
+#
+#  Once an Eversolo is off its LMS player disappears, so the player's own power
+#  button - the only route to _wakeDevice above - is gone exactly when it is
+#  needed.  The page (Power.pm) is reachable without any player: from a Material
+#  Home tile, or by its path.  It lists the devices of every player that has
+#  home_power on, and says for each whether it is answering.
+#
+#  WHERE THE DEVICES COME FROM.  $prefs->allClients, which returns the stored
+#  prefs of EVERY player the namespace has seen, connected or not - a player
+#  that has left LMS keeps its prefs.  Those objects are read-only (LMS does not
+#  migrate them), and nothing here writes to one.
+#
+#  A device is its ADDRESS, as everywhere else in this plugin, so two players
+#  pointing at one Eversolo list it once.  Nothing the page sends is trusted as
+#  an address: a press names a device, and the address, port and MAC are read
+#  back from the prefs.
+#
+#  A player qualifies with enabled + power_control + home_power, the same gate
+#  as the player's own power button plus the opt-in for the page.
+# ---------------------------------------------------------------------------
+sub _homePowerOn {
+    my $cp = shift;
+
+    return $cp->get('enabled') && $cp->get('power_control') && $cp->get('home_power');
+}
+
+sub _powerDevices {
+    my %byIP;
+
+    for my $cp ( $prefs->allClients ) {
+        next unless _homePowerOn($cp);
+
+        my $ip = $cp->get('eversolo_ip');
+        $ip = '' unless defined $ip;
+        $ip =~ s/^\s+|\s+$//g;
+        next if $ip eq '';
+
+        my $d = $byIP{$ip} ||= {
+            id   => $ip,
+            ip   => $ip,
+            port => $cp->get('eversolo_port') || 9529,
+            mac  => '',
+            name => '',
+        };
+
+        # Two players on one device: either may be the one that learned the
+        # MAC or the name, so take whichever has it.
+        $d->{mac}  ||= Plugins::EversoloScreenControl::Discovery::normaliseMac( $cp->get('eversolo_mac') );
+        $d->{name} ||= $cp->get('eversolo_name') || '';
+    }
+
+    $_->{name} ||= $_->{ip} for values %byIP;
+
+    return sort { lc $a->{name} cmp lc $b->{name} || $a->{ip} cmp $b->{ip} } values %byIP;
+}
+
+# A player removed from LMS ("forget player") must not leave its device on the
+# power page, and LMS will not do it for us: forgetClient drops the CONNECTION
+# and leaves every client pref where it was (read from LMS 9.0's source, and
+# recorded in HQPlayer Bridge's ledger).  allClients would go on listing it, and
+# with the player gone there is no settings page left to untick it from.  So the
+# opt-in goes with the player.
+#
+# Only home_power is cleared.  The rest stays as LMS keeps it, so a player that
+# comes back later has its address and power settings, and the page is one tick
+# away.  Setting it fires the setChange callback, which withdraws the Home tile
+# if this was the last player asking for it.
+#
+# THE ID, NOT ->client: the notification is delivered AFTER forgetClient has
+# removed the player, and Request::client is a getClient() lookup - always
+# undef here.  A forget LMS REFUSES (a connected player) notifies nothing.
+sub _onForget {
+    my $request = shift;
+
+    my $id = $request->clientid or return;
+
+    return unless Slim::Utils::Prefs::Client->hasPrefs( $prefs, $id );
+
+    my $cp = Slim::Utils::Prefs::Client->new( $prefs, $id );
+    return unless $cp->get('home_power');
+
+    $log->info("Eversolo: player $id was removed from LMS - taking its device off the power page");
+
+    $cp->set( 'home_power', 0 );
+
+    return;
+}
+
+# Offer the Home tile while any player asks for it, withdraw it when none does.
+# Runs at postinit and on every change to a pref that decides it.
+sub _syncHomeTile {
+    return unless main::WEBUI;
+
+    my $wanted = grep { _homePowerOn($_) } $prefs->allClients;
+
+    if ( !$wanted ) {
+        if ( $homeTile && delete $homeTile->{iframe} ) {
+            main::INFOLOG && $log->is_info && $log->info(
+                'Home power tile withdrawn - no player has it switched on' );
+        }
+        return;
+    }
+
+    if ( !$homeTile ) {
+        # Through ->can, as HQPlayer Bridge does: a compiled call would bind at
+        # OUR compile time, and ->can on a package that was never loaded
+        # answers undef instead of dying.  No Material, no tile, no error - the
+        # page itself is still there at its path.
+        my $register = eval { Plugins::MaterialSkin::Plugin->can('registerCustomAction') };
+
+        if ( !$register ) {
+            main::INFOLOG && $log->is_info && $log->info(
+                'no Material registerCustomAction - no Home tile (the power page is still at '
+              . POWER_PAGE_PATH . ')' );
+            return;
+        }
+
+        my $tile = {
+            title => Slim::Utils::Strings::string('PLUGIN_EVERSOLO_POWER_PAGE'),
+            icon  => 'power_settings_new',
+        };
+
+        # `iframe`, not `weblink`: a pinned tile opens an iframe as a Material
+        # dialog, and a weblink always tears off a separate browser window.
+        if ( !eval { $register->( 'pinned', $tile ); 1 } ) {
+            $log->warn("could not register the Material Home tile: $@");
+            return;
+        }
+
+        $homeTile = $tile;
+    }
+
+    if ( !$homeTile->{iframe} ) {
+        $homeTile->{iframe} = POWER_PAGE_PATH;
+        main::INFOLOG && $log->is_info && $log->info(
+            'Home power tile offered - it appears once Material is reloaded' );
+    }
+
+    return;
+}
+
+# What the page shows for a device: its own answer, unless a press is still
+# inside its grace window and the answer does not agree with it yet.
+sub _powerState {
+    my ( $ip, $up ) = @_;
+
+    my $p = $powerPending{$ip};
+
+    if ( $p && ( time() > $p->{until} || ( $p->{to} eq 'on' ? $up : !$up ) ) ) {
+        delete $powerPending{$ip};
+        $p = undef;
+    }
+
+    return $p ? ( $p->{to} eq 'on' ? 'waking' : 'stopping' )
+              : ( $up ? 'on' : 'off' );
+}
+
+# eversolopower status
+#   -> count, devices_loop: [{ id, name, state (on|off|waking|stopping), canwake }]
+#
+# Asks every listed device getModel, in parallel.  "Answers" is ON; anything
+# else is OFF, because an Eversolo that is off has nothing listening at all.
+#
+# ASYNC, AND THE ORDER MATTERS.  Slim::Control::Request::setStatusDone calls
+# executeDone itself when the status is "processing", and execute() calls it
+# again after the function returns unless the status is STILL processing.  So a
+# probe that answers synchronously (identify does for an empty address, which
+# _powerDevices never lists - but a stubbed or future probe may) must not
+# complete a request already put into processing: the callback would fire twice.  Processing is therefore declared only AFTER
+# the loop, and only if something is still outstanding.
+sub _powerStatusQuery {
+    my $request = shift;
+
+    my @devices = _powerDevices();
+    my $left    = scalar @devices;
+    my $inline  = 1;
+    my $idx     = 0;
+
+    $request->addResult( 'count', scalar @devices );
+
+    for my $d (@devices) {
+        my $i = $idx++;
+
+        Plugins::EversoloScreenControl::Discovery::identify( $d->{ip}, $d->{port}, sub {
+            my $up = shift ? 1 : 0;
+
+            $request->addResultLoop( 'devices_loop', $i, 'id',      $d->{id} );
+            $request->addResultLoop( 'devices_loop', $i, 'name',    $d->{name} );
+            $request->addResultLoop( 'devices_loop', $i, 'state',   _powerState( $d->{ip}, $up ) );
+            $request->addResultLoop( 'devices_loop', $i, 'canwake', $d->{mac} ? 1 : 0 );
+
+            $request->setStatusDone() if !--$left && !$inline;
+        } );
+    }
+
+    $inline = 0;
+
+    $left ? $request->setStatusProcessing() : $request->setStatusDone();
+
+    return;
+}
+
+# eversolopower set id:<device> to:on|off
+sub _powerSetCommand {
+    my $request = shift;
+
+    my $id = $request->getParam('id');
+    my $to = $request->getParam('to');
+
+    $id = '' unless defined $id;
+    $to = '' unless defined $to;
+
+    my ($d) = grep { $_->{id} eq $id } _powerDevices();
+
+    if ( !$d || ( $to ne 'on' && $to ne 'off' ) ) {
+        $request->setStatusBadParams();
+        return;
+    }
+
+    if ( $to eq 'on' ) {
+        if ( !_sendWake( $d->{mac}, $d->{ip}, $d->{name}, 'power page pressed' ) ) {
+            $log->warn("Eversolo [$d->{name}]: cannot wake the device - its hardware address is not known yet");
+            $request->setStatusBadParams();
+            return;
+        }
+    }
+    else {
+        $log->info("Eversolo [$d->{name}]: power page pressed — powering the device down");
+
+        # As a player's own power-off does: a pending screen-off is moot for
+        # every connected player that drives this device.
+        for my $client ( Slim::Player::Client::clients() ) {
+            next unless $client;
+
+            my $cip = $prefs->client($client)->get('eversolo_ip');
+            $cip = '' unless defined $cip;
+            $cip =~ s/^\s+|\s+$//g;
+            next unless $cip eq $d->{ip};
+
+            Slim::Utils::Timers::killTimers( $client, \&_turnScreenOff );
+            delete $offPending{ $client->id() };
+            delete $screenState{ $client->id() };
+        }
+
+        Plugins::EversoloScreenControl::Discovery::setPowerOption(
+            $d->{ip}, $d->{port}, 'poweroff' );
+    }
+
+    $powerPending{ $d->{ip} } = {
+        to    => $to,
+        until => time() + ( $to eq 'on' ? WAKE_GRACE : STOP_GRACE ),
+    };
+
+    $request->addResult( 'state', $to eq 'on' ? 'waking' : 'stopping' );
+    $request->setStatusDone();
+
+    return;
 }
 
 # ---------------------------------------------------------------------------

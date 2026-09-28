@@ -59,7 +59,7 @@ sub page {
 sub prefs {
     my ($class, $client) = @_;
     return ($prefs->client($client),
-        qw(enabled power_control eversolo_ip eversolo_port screen_off_delay));
+        qw(enabled power_control home_power eversolo_ip eversolo_port screen_off_delay));
 }
 
 sub handler {
@@ -76,6 +76,7 @@ sub handler {
         # off.  Collapse it, and repair a pref already in that state.
         $params->{'pref_enabled'}       = _checkbox( $params->{'pref_enabled'} );
         $params->{'pref_power_control'} = _checkbox( $params->{'pref_power_control'} );
+        $params->{'pref_home_power'}    = _checkbox( $params->{'pref_home_power'} );
 
         # --- The Eversolo's address ---
         my $was = _address( $cprefs->get('eversolo_ip') );
@@ -100,6 +101,10 @@ sub handler {
         $cprefs->set('enabled',        $params->{'pref_enabled'});
         $cprefs->set('power_control',  $params->{'pref_power_control'});
 
+        # Offers or withdraws the Material Home tile.  Plugin.pm hears this
+        # through a pref change callback - this module still calls nothing in it.
+        $cprefs->set('home_power',     $params->{'pref_home_power'});
+
         # A new address knows nothing about itself yet.  Drop the old name so
         # the page cannot show one device's name beside another's address.
         if ( $now ne $was ) {
@@ -118,6 +123,7 @@ sub handler {
 
         $params->{'prefs'}->{'enabled'}          = _checkbox( $cprefs->get('enabled') );
         $params->{'prefs'}->{'power_control'}    = _checkbox( $cprefs->get('power_control') );
+        $params->{'prefs'}->{'home_power'}       = _checkbox( $cprefs->get('home_power') );
         $params->{'prefs'}->{'eversolo_ip'}      = $ip;
         $params->{'prefs'}->{'eversolo_port'}    = $port;
         $params->{'prefs'}->{'screen_off_delay'} = $cprefs->get('screen_off_delay');
