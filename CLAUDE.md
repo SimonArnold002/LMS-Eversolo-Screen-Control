@@ -16,7 +16,7 @@ The plugin is **per-player**, not global. It appears in the **Player Settings**
 menu (alongside DSD Player, etc.) and is enabled/disabled independently for each
 LMS player. Players not attached to an Eversolo simply leave it off and are unaffected.
 
-**Current version: 2.2.0**
+**Current version: 2.3.0**
 
 ## How it works
 
