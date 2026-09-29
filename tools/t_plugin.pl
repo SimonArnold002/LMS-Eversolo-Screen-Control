@@ -321,7 +321,11 @@ print "\n-- the Home tile follows the opt-in --\n";
     @REGISTERED = ();
     my $sync = $P->can('_syncHomeTile');
 
-    $PREFS{'plugin.eversoloscreencontrol'}{'p1'} = { enabled => 1, power_control => 1, home_power => 0 };
+    # An address is part of qualifying now, so the fixture carries one: this
+    # block is about the opt-in, not about the address gate below.
+    $PREFS{'plugin.eversoloscreencontrol'}{'p1'} =
+        { enabled => 1, power_control => 1, home_power => 0,
+          eversolo_ip => '192.168.1.197' };
     $sync->();
     is(scalar @REGISTERED, 0, 'nobody opted in: no tile is registered');
 
@@ -475,6 +479,18 @@ print "\n-- eversolopower set --\n";
     is($s->{result}{devices_loop}[0]{state}, 'stopping', 'still answering while it shuts down: stopping');
 }
 
+# The pref names initPlugin hands to setChange, READ OUT OF THE REAL SOURCE
+# rather than copied here - a hand-mirrored list silently stops testing the
+# thing it mirrors the moment the real one gains a name.
+sub sync_tile_prefs {
+    my $src = do { open my $fh, '<', $PLUGIN or die $!; local $/; <$fh> };
+
+    my ($names) = $src =~ /setChange\(\s*\\&_syncHomeTile,\s*qw\(([^)]*)\)/
+        or die "could not find the _syncHomeTile setChange list in $PLUGIN\n";
+
+    return split ' ', $names;
+}
+
 print "\n-- a player removed from LMS takes its device off the power page --\n";
 {
     my $ns = 'plugin.eversoloscreencontrol';
@@ -482,8 +498,12 @@ print "\n-- a player removed from LMS takes its device off the power page --\n";
     %ONCHANGE = ();
     @CLIENTS = ();     # both players are gone from LMS
 
+    my @watched = sync_tile_prefs();
+    ok( scalar( grep { $_ eq 'eversolo_ip' } @watched ),
+        'the tile follows eversolo_ip, so filling an address in offers it' );
+
     # The wiring initPlugin makes, so the tile follows through the real carrier.
-    Stub::PrefsRoot->new($ns)->setChange( $P->can('_syncHomeTile'), qw(home_power power_control enabled) );
+    Stub::PrefsRoot->new($ns)->setChange( $P->can('_syncHomeTile'), @watched );
 
     $PREFS{$ns}{gone} = { %$OPTED, eversolo_ip => '192.168.1.197', eversolo_mac => '800a805e2b7b' };
     $PREFS{$ns}{kept} = { %$OPTED, eversolo_ip => '192.168.1.60' };
@@ -492,20 +512,130 @@ print "\n-- a player removed from LMS takes its device off the power page --\n";
     my $tile = @REGISTERED ? $REGISTERED[-1][1] : undef;
     is($tile && $tile->{iframe}, '/eversolopower', 'the tile is offered while both are opted in');
 
+    # A FORGET MUST NOT TAKE THE DEVICE OFF THE PAGE.  LMS issues `client forget`
+    # by itself 300s after any slimproto player disconnects, and an Eversolo on
+    # SqueezeConnect is one - so switching the device off would have withdrawn
+    # the tile five minutes later, removing the only way left to wake it.  The
+    # opt-in is the user's tick and nothing else clears it.  Do not "restore"
+    # the clearing: see _onForget's header for why the removal it was written
+    # for never arrives as a forget at all.
     my $forget = $P->can('_onForget');
     $forget->( Stub::ForgetRequest->new('gone') );
-    is($PREFS{$ns}{gone}{home_power}, 0, 'forgetting a player clears its opt-in');
-    my @ips = map { $_->{ip} } $P->can('_powerDevices')->();
-    is("@ips", '192.168.1.60', 'so its device leaves the power page');
-    is($PREFS{$ns}{gone}{eversolo_ip}, '192.168.1.197', 'its other settings stay, as LMS keeps them');
-    is($PREFS{$ns}{gone}{power_control}, 1, 'power control included');
-    ok($tile && $tile->{iframe}, 'another player still opted in keeps the tile');
+
+    is($PREFS{$ns}{gone}{home_power},   1, 'a forget does NOT clear the opt-in');
+    is($PREFS{$ns}{gone}{eversolo_ip}, '192.168.1.197', 'nor the address');
+    is($PREFS{$ns}{gone}{power_control}, 1, 'nor power control');
+
+    my @ips = sort map { $_->{ip} } $P->can('_powerDevices')->();
+    is("@ips", '192.168.1.197 192.168.1.60',
+        'the forgotten player\'s device stays on the power page, where it is needed');
 
     $forget->( Stub::ForgetRequest->new('kept') );
-    ok($tile && !exists $tile->{iframe}, 'the last one forgotten withdraws the tile, through the pref change');
+    ok($tile && $tile->{iframe},
+        'and forgetting every player still leaves the tile - only unticking withdraws it');
+
+    # Unticking is the one route that does.
+    $PREFS{$ns}{gone}{home_power} = 0;
+    $PREFS{$ns}{kept}{home_power} = 0;
+    $P->can('_syncHomeTile')->();
+    ok($tile && !exists $tile->{iframe}, 'unticking the last player withdraws the tile');
 
     $forget->( Stub::ForgetRequest->new('never-seen') );
     ok(!exists $PREFS{$ns}{'never-seen'}, 'forgetting a player the plugin never knew writes nothing');
+}
+
+print "\n-- the player's own power button gets the same grace window --\n";
+{
+    my $ns = 'plugin.eversoloscreencontrol';
+    %PREFS = (); %ONCHANGE = (); @IDENTIFY = (); @WAKES = (); @POWER_OFF = ();
+
+    my $driver = Stub::Client->new('driver', mode => 'stop');
+    @CLIENTS = ($driver);
+    $PREFS{$ns}{driver} = { %$OPTED, eversolo_ip => '192.168.1.197',
+                            eversolo_mac => '800a805e2b7b', eversolo_port => 9529 };
+
+    my $status = $P->can('_powerStatusQuery');
+
+    # Control: nothing pressed, the device does not answer - the page says off.
+    @IDENTIFY = ();
+    my $s = Stub::Query->new->execute($status);
+    $IDENTIFY[0][1]->(undef);
+    is($s->{result}{devices_loop}[0]{state}, 'off', 'an unpressed silent device reads off');
+
+    # The PLAYER's power button, not the page's.
+    {
+        local *Plugins::EversoloScreenControl::Plugin::_sendWake =
+            sub { push @WAKES, [ @_ ]; 1 };
+        $P->can('_powerCallback')->( Stub::Request->new($driver, 1) );
+    }
+    is(scalar @WAKES, 1, 'powering the player on wakes the device');
+
+    @IDENTIFY = ();
+    $s = Stub::Query->new->execute($status);
+    $IDENTIFY[0][1]->(undef);
+    is($s->{result}{devices_loop}[0]{state}, 'waking',
+        'and the page says waking while it boots, not off with a live button');
+
+    # And the other direction: it still answers for a few seconds after a
+    # power-off, which must not read as "on".
+    $P->can('_powerCallback')->( Stub::Request->new($driver, 0) );
+    is(scalar @POWER_OFF, 1, 'powering the player off powers the device down');
+
+    @IDENTIFY = ();
+    $s = Stub::Query->new->execute($status);
+    $IDENTIFY[0][1]->({});
+    is($s->{result}{devices_loop}[0]{state}, 'stopping',
+        'and the page says stopping while it is still answering');
+
+    # A wake that never left must NOT arm the window.
+    %PREFS = (); @WAKES = ();
+    $PREFS{$ns}{driver} = { %$OPTED, eversolo_ip => '192.168.1.197',
+                            eversolo_mac => '800a805e2b7b', eversolo_port => 9529 };
+    {
+        local *Plugins::EversoloScreenControl::Plugin::_sendWake =
+            sub { push @WAKES, [ @_ ]; 0 };
+        $P->can('_powerCallback')->( Stub::Request->new($driver, 1) );
+    }
+    @IDENTIFY = ();
+    $s = Stub::Query->new->execute($status);
+    $IDENTIFY[0][1]->(undef);
+    is($s->{result}{devices_loop}[0]{state}, 'off',
+        'a wake that never left leaves the device reading off, not waking');
+}
+
+print "\n-- no address, no tile --\n";
+{
+    my $ns = 'plugin.eversoloscreencontrol';
+    # @REGISTERED is NOT reset: the tile is registered once per server run and
+    # _syncHomeTile mutates that same hashref for ever after, so clearing the
+    # list here would just hide it.
+    %PREFS = (); %ONCHANGE = (); @CLIENTS = ();
+
+    Stub::PrefsRoot->new($ns)->setChange( $P->can('_syncHomeTile'), sync_tile_prefs() );
+
+    # Every box ticked, no address typed in yet.  Nothing can be sent anywhere,
+    # so there is nothing for a tile to open - it used to be offered anyway, and
+    # opened a page saying no player had the box ticked.
+    $PREFS{$ns}{half} = { %$OPTED, eversolo_ip => '' };
+
+    $P->can('_syncHomeTile')->();
+    my $tile = @REGISTERED ? $REGISTERED[-1][1] : undef;
+    ok( !( $tile && $tile->{iframe} ), 'a player with the boxes ticked but no address gets no tile' );
+    my @none = $P->can('_powerDevices')->();
+    is( scalar @none, 0, 'and no device on the page' );
+
+    # Whitespace is not an address either.
+    Stub::PrefsRoot->new($ns)->client( Stub::Client->new('half') )->set('eversolo_ip', '   ');
+    $tile = @REGISTERED ? $REGISTERED[-1][1] : undef;
+    ok( !( $tile && $tile->{iframe} ), 'nor is a field holding only spaces' );
+
+    # Typing the address in is what offers it, through the real pref carrier.
+    Stub::PrefsRoot->new($ns)->client( Stub::Client->new('half') )
+        ->set('eversolo_ip', '192.168.1.197');
+
+    $tile = @REGISTERED ? $REGISTERED[-1][1] : undef;
+    is( $tile && $tile->{iframe}, '/eversolopower',
+        'filling the address in offers the tile, with no other change' );
 }
 
 print "\n-- a wake needs a MAC --\n";

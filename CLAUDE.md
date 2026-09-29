@@ -15,6 +15,8 @@ Re-raise one only by disproving the evidence it cites.
 | `client new` cannot resolve its client | It can. `Client::new` puts the client in `%clientHash` (Client.pm:310) **before** notifying (:315), and `notifyFromArray` carries the object — so `$request->client` is live there. (Unlike `client forget`, where `->client` really is always undef) |
 | `forgetTimer` runs a pending timer's callback | It does NOT. `Client::forgetClient` calls `Timers::forgetTimer`, which fires `$timer->cb->(EV_KILL)` — and the wrapper in `Timers.pm::_makeTimer` **returns on EV_KILL before calling `$subptr`**. So `_turnScreenOff` never ran on a forget and never cleared `%offPending{$id}`: reconcile then skipped that id for ever (`next if $offPending{$id}` in the not-playing branch), and the discarded client object was retained. `_onForget` now clears `%offPending`, `%screenState`, `%lastElapsed`, `%playbackRevision` and the `$id/...` keys of `%warnedPlaceholder`, before the `home_power` check, for every forgotten player |
 | a `=~` assertion in these suites can fail | **It could not.** A regex match in LIST context yields the EMPTY LIST on failure, so `ok($html =~ /re/, 'label')` reached `ok` as `('label')` — a truthy `$cond` and an undef label — and a FAILED assertion printed `PASS` with a blank name. All 17 such call sites (t_page.pl only) now force boolean context with `!!`, and `ok` counts a missing label as a FAILURE rather than dying. Found 2026-09-29 by anti-testing; every `ok($x =~ ...)` written before that date passed vacuously |
+| `client forget` means a user removed a player | **It usually means LMS's own timer.** `Slimproto.pm`'s `$forget_disconnected_time = 300` arms on every slimproto socket close and `forget_disconnected_client` then issues `['client','forget']`. An Eversolo on **SqueezeConnect** is a slimproto player, so switching the device off produced a forget 5 minutes later. Meanwhile the deliberate removal it was written for never arrives this way: **nothing in `lms-material` issues a forget** (grepped 2026-09-29: 95 js/pm files, zero occurrences, and `player` matches as a control), and no handler in LMS's Perl tree issues one either — only a hardware front-panel menu (`Buttons/Settings.pm:1033`) and an internal Jive cleanup that calls `forgetClient` DIRECTLY and notifies nobody. `_onForget` is now state-only |
+| a plugin can tidy its Material Home tile away on uninstall | **It cannot, for two independent reasons.** (1) LMS has no uninstall hook: `PluginManager::_needsUninstall` is `rmtree` + `$prefs->remove`, run at startup before plugins load, and the only per-plugin callbacks are `initPlugin`/`postinitPlugin` (:391) and `shutdownPlugin` (:419). (2) Material's Home list is saved with `setLocalStorageVal("topItems", …)` — it lives in each **browser's localStorage**, so nothing server-side can reach it. `loadCustomPinned` only ever ADDS, and never prunes an entry whose action has gone. After an uninstall the action disappears from `$PLUGIN_CUSTOM_ACTIONS` (in-memory, rebuilt each start) so it stops being offered, but an already-pinned tile stays and opens a 404. It carries `menu: [RENAME_ACTION, UNPIN_ACTION]`, so the user can unpin it by hand — the same as any other plugin's shortcut. Nothing to fix; do not propose an uninstall hook |
 | `$prefs->allClients` order is stable | It is `keys %{...}` (Namespace.pm:244), randomised per process. `_powerDevices` fills each field from the first player that has one, so it now sorts on `clientid` first — otherwise two players on one device handed the page a different port, name or MAC per restart. `t_plugin.pl`'s stub deliberately yields them in REVERSE order so anything order-dependent fails there |
 
 ### Settled
@@ -216,18 +218,36 @@ the only button that ever sent the wake packet. The page needs no player.
   Material only ever adds tiles — and a tap on it then shows the "none" message.
 - **Off from the page** also drops the pending screen-off of every connected
   player whose `eversolo_ip` is that device, as a player's own power-off does.
-- **A player REMOVED from LMS takes its device off the page** (`_onForget`,
-  subscribed to `client forget`; Simon's call 2026-09-28 — "you can remove
-  players from LMS and then that would not want to be stuck on"). LMS's
-  `forgetClient` drops the connection and KEEPS every client pref, so without
-  this the forgotten player's device stayed listed for ever, with no settings
-  page left to untick it. Only `home_power` is cleared: the address and power
-  settings stay as LMS keeps them, for a player that comes back. The clear
-  fires the `setChange` callback, which withdraws the tile if it was the last.
-  **Keyed on `$request->clientid`, NEVER `->client`**: the notification arrives
-  after `forgetClient`, so `->client` is always undef — HQPlayer Bridge shipped
-  exactly that bug (its ledger, `_onForget could never fire`). `hasPrefs` guards
-  it, so forgetting a player the plugin never knew writes nothing.
+- **THE GRACE WINDOW COVERS BOTH SURFACES.** `%powerPending` used to be stamped
+  only by the page's own button, so a wake from the PLAYER's power button left
+  the page showing the device Off with a live "switch on" button for the whole
+  ~60s boot, and a player power-off left it showing On while the device shut
+  down. Both directions now go through one `_markPowerPending`, keyed by
+  address. A wake is only believed if `_sendWake` says the packet actually left.
+- **AN ADDRESS IS PART OF QUALIFYING** (Simon's call, 2026-09-29). `_homePowerOn`
+  requires a non-empty `eversolo_ip` as well as the three ticks, through the one
+  `_deviceAddress` helper the device list also uses — while the two gates
+  disagreed, a player with the boxes ticked and no address was offered a tile
+  that opened a page saying no player had the box ticked. `eversolo_ip` is
+  therefore in the `setChange` list: filling the address in afterwards is what
+  offers the tile. `t_plugin.pl` reads that list out of this file's source
+  rather than mirroring it, so it cannot drift.
+- **THE TICK IS THE ONLY THING THAT CONTROLS THE TILE** (Simon's call,
+  2026-09-29). A player qualifies while `home_power` is on; untick it and
+  `_syncHomeTile` withdraws the action. `_onForget` does **not** clear it — see
+  the Review Ledger: `client forget` is overwhelmingly LMS's own 300s
+  disconnect timer, which an Eversolo on SqueezeConnect triggers every time it
+  is switched off, and the deliberate removal it was written for is not
+  reachable from Material or the LMS web UI at all. `_onForget` survives as
+  state-only cleanup (`%offPending` and friends), which a forget really does
+  leak. **Keyed on `$request->clientid`, NEVER `->client`**: the notification
+  arrives after `forgetClient`, so `->client` is always undef — HQPlayer Bridge
+  shipped exactly that bug (its ledger, `_onForget could never fire`).
+- **A tile already pinned to a Home screen can only be removed by the user.**
+  It is in that browser's `localStorage`, so neither this plugin nor Material's
+  server half can take it away — true when the box is unticked and true after
+  the plugin is uninstalled. Unpin is on the tile's own menu. Do not try to fix
+  this; see the Review Ledger row.
 - **Material's only reader of `pinned` is `loadCustomPinned`** (grepped
   2026-09-28, JS and Plugin.pm), so an action stripped of `iframe` is inert.
 
@@ -517,7 +537,7 @@ from the repo root:
   does nothing — the assertions check that the unguarded path WOULD have acted.
   `ESC_PLUGIN` points it at a mutated copy.
 
-  Since 2026-09-28 it also drives the power page's server half (76 assertions
+  Since 2026-09-28 it also drives the power page's server half (87 assertions
   in all; the forget path through the real `setChange` carrier, with a stub
   request whose `->client` is undef as LMS's is): the Home tile registered once and only on opt-in, withdrawn and
   restored in place; the device list built from DISCONNECTED players' prefs and

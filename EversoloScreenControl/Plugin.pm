@@ -203,7 +203,9 @@ sub initPlugin {
     # Offer or withdraw the Home tile the moment a player's settings change it.
     # Fires for client prefs too: Base::set reads the callbacks off the
     # namespace root.
-    $prefs->setChange( \&_syncHomeTile, qw(home_power power_control enabled) );
+    # eversolo_ip is in here because _homePowerOn reads it: filling the address
+    # in on a player whose boxes are already ticked is what offers the tile.
+    $prefs->setChange( \&_syncHomeTile, qw(home_power power_control enabled eversolo_ip) );
 
     # Subscribe to playback STATE changes only (all players — we filter
     # per-player inside the callback).  The second filter array restricts us
@@ -525,7 +527,10 @@ sub _setDevicePower {
     my $name = $client->name() || $client->id();
 
     if ($on) {
-        _wakeDevice($client);
+        # Only a wake that actually went out earns the window - _sendWake
+        # reports a packet that never left, and a device nobody signalled must
+        # not read as "switching on" for two minutes.
+        _markPowerPending( _resolveIP($client), 'on' ) if _wakeDevice($client);
     }
     else {
         my $ip = _resolveIP($client) or return;
@@ -539,6 +544,9 @@ sub _setDevicePower {
 
         Plugins::EversoloScreenControl::Discovery::setPowerOption(
             $ip, $cprefs->get('eversolo_port') || 9529, 'poweroff' );
+
+        # It answers for a few seconds yet; the page must not call that "on".
+        _markPowerPending( $ip, 'off' );
     }
 
     return;
@@ -571,12 +579,10 @@ sub _wakeDevice {
             "Eversolo [$name]: cannot wake the device - its hardware address is not known yet. "
           . "Open Player Settings > Eversolo Screen Control once while the device is ON, and it will be learned."
         );
-        return;
+        return 0;
     }
 
-    _sendWake( $mac, _resolveIP($client), $name, 'player powered on' );
-
-    return;
+    return _sendWake( $mac, _resolveIP($client), $name, 'player powered on' );
 }
 
 # The packet itself, apart from any player: the power page wakes a device whose
@@ -680,10 +686,32 @@ sub magicPacket {
 #  A player qualifies with enabled + power_control + home_power, the same gate
 #  as the player's own power button plus the opt-in for the page.
 # ---------------------------------------------------------------------------
+# The address this player's device is at, trimmed, or '' when it has none.
+# ONE definition, because two things read it and they must not disagree: the
+# tile is offered on it, and the page lists devices on it.  While they did
+# disagree, a player with the box ticked and no address got a Home tile that
+# opened a page saying nothing had the box ticked.
+sub _deviceAddress {
+    my $cp = shift;
+
+    my $ip = $cp->get('eversolo_ip');
+    $ip = '' unless defined $ip;
+    $ip =~ s/^\s+|\s+$//g;
+
+    return $ip;
+}
+
+# AN ADDRESS IS PART OF QUALIFYING.  Without one nothing can be sent anywhere,
+# so there is nothing for a tile to open.  `eversolo_ip` is in the setChange
+# list in initPlugin for this reason - drop it there and the tile never appears
+# when a user fills the address in afterwards.
 sub _homePowerOn {
     my $cp = shift;
 
-    return $cp->get('enabled') && $cp->get('power_control') && $cp->get('home_power');
+    return $cp->get('enabled')
+        && $cp->get('power_control')
+        && $cp->get('home_power')
+        && _deviceAddress($cp) ne '';
 }
 
 sub _powerDevices {
@@ -696,12 +724,11 @@ sub _powerDevices {
     # different name, or a different MAC - on different restarts.
     for my $cp ( sort { ($a->{'clientid'} || '') cmp ($b->{'clientid'} || '') }
                  $prefs->allClients ) {
+        # _homePowerOn has already refused a player with no address, so there
+        # is no second address test here - one gate, one definition.
         next unless _homePowerOn($cp);
 
-        my $ip = $cp->get('eversolo_ip');
-        $ip = '' unless defined $ip;
-        $ip =~ s/^\s+|\s+$//g;
-        next if $ip eq '';
+        my $ip = _deviceAddress($cp);
 
         my $d = $byIP{$ip} ||= {
             id   => $ip,
@@ -722,17 +749,27 @@ sub _powerDevices {
     return sort { lc $a->{name} cmp lc $b->{name} || $a->{ip} cmp $b->{ip} } values %byIP;
 }
 
-# A player removed from LMS ("forget player") must not leave its device on the
-# power page, and LMS will not do it for us: forgetClient drops the CONNECTION
-# and leaves every client pref where it was (read from LMS 9.0's source, and
-# recorded in HQPlayer Bridge's ledger).  allClients would go on listing it, and
-# with the player gone there is no settings page left to untick it from.  So the
-# opt-in goes with the player.
+# A `client forget` CLEARS THIS PLUGIN'S IN-MEMORY STATE FOR THAT PLAYER, AND
+# NOTHING ELSE.  It deliberately does NOT touch home_power or any other pref.
 #
-# Only home_power is cleared.  The rest stays as LMS keeps it, so a player that
-# comes back later has its address and power settings, and the page is one tick
-# away.  Setting it fires the setChange callback, which withdraws the Home tile
-# if this was the last player asking for it.
+# It used to clear home_power, so that a player removed from LMS took its device
+# off the power page.  That was wrong, and measurably so: LMS issues
+# `client forget` BY ITSELF, 300s after any slimproto player's socket closes
+# (Slimproto.pm's $forget_disconnected_time, armed on disconnect and fired by
+# forget_disconnected_client).  An Eversolo running SqueezeConnect IS such a
+# player, so switching the device off disconnects it, and five minutes later the
+# device left the page and the Home tile was withdrawn - removing the only route
+# left to wake it, in exactly the situation this page exists for.
+#
+# And the removal it was written for does not arrive this way at all: nothing in
+# Material issues a forget (grepped, 2026-09-29: no occurrence of the word), and
+# no handler in LMS's own tree issues one either.  The only other issuers are a
+# hardware player's front-panel menu and an internal Jive cleanup that calls
+# forgetClient DIRECTLY and so notifies nobody.  The hook therefore fired only
+# in the case it had to leave alone, and never in the case it was asked for.
+#
+# The tile now follows one thing only: whether any player still has the box
+# ticked.  Untick it and _syncHomeTile withdraws it.  Simon's call, 2026-09-29.
 #
 # THE ID, NOT ->client: the notification is delivered AFTER forgetClient has
 # removed the player, and Request::client is a getClient() lookup - always
@@ -782,15 +819,8 @@ sub _onForget {
     delete $warnedPlaceholder{$_}
         for grep { /^\Q$id\E\// } keys %warnedPlaceholder;
 
-    return unless Slim::Utils::Prefs::Client->hasPrefs( $prefs, $id );
-
-    my $cp = Slim::Utils::Prefs::Client->new( $prefs, $id );
-    return unless $cp->get('home_power');
-
-    $log->info("Eversolo: player $id was removed from LMS - taking its device off the power page");
-
-    $cp->set( 'home_power', 0 );
-
+    # NO PREF IS TOUCHED HERE.  See the note above before adding one: a forget
+    # is usually LMS's own 300s disconnect timer, not a user removing anything.
     return;
 }
 
@@ -843,6 +873,27 @@ sub _syncHomeTile {
         main::INFOLOG && $log->is_info && $log->info(
             'Home power tile offered - it appears once Material is reloaded' );
     }
+
+    return;
+}
+
+# A power change is believed over the device's own answer until the device
+# agrees or the window runs out.  ONE definition, because two surfaces make the
+# same change: the power page's button and the PLAYER's own power button.  While
+# only the page stamped this, a wake from the player button left the page showing
+# the device Off, with a live "switch on" button, for the whole boot.
+#
+# Keyed by ADDRESS, like everything else about a device: the two surfaces do not
+# share a player, and a device fed by two players must not get two windows.
+sub _markPowerPending {
+    my ( $ip, $to ) = @_;
+
+    return unless defined $ip && $ip ne '';
+
+    $powerPending{$ip} = {
+        to    => $to,
+        until => time() + ( $to eq 'on' ? WAKE_GRACE : STOP_GRACE ),
+    };
 
     return;
 }
@@ -954,10 +1005,7 @@ sub _powerSetCommand {
             $d->{ip}, $d->{port}, 'poweroff' );
     }
 
-    $powerPending{ $d->{ip} } = {
-        to    => $to,
-        until => time() + ( $to eq 'on' ? WAKE_GRACE : STOP_GRACE ),
-    };
+    _markPowerPending( $d->{ip}, $to );
 
     $request->addResult( 'state', $to eq 'on' ? 'waking' : 'stopping' );
     $request->setStatusDone();
