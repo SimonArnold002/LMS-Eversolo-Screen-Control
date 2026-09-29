@@ -28,6 +28,12 @@ Re-raise one only by disproving the evidence it cites.
   `pressed`) and discards a stale answer; it is the NEXT poll that replaces the
   optimistic state. A tick arriving while a poll is in flight now reschedules
   instead of dropping out of the loop.
+  **The stamp is only half of it** (2026-09-29): it discards an answer to a poll
+  issued BEFORE the press, but a timer already armed can fire just after one, and
+  that poll carries the current stamp — so it is accepted, and can still reach the
+  server ahead of the `set` and answer with the pre-press state. `press()`
+  therefore also clears the pending timer; the only poll that follows a press is
+  the one its own callback schedules, once the server knows about it.
 - **`Power.pm` keeps no copy of its path.** `init` used to store `$PATH` and nothing
   ever read it. The page posts to `/jsonrpc.js`, never back to itself; holding the
   path would be the first thread of the coupling the module header forbids.
@@ -236,6 +242,10 @@ the only button that ever sent the wake packet. The page needs no player.
   ~60s boot, and a player power-off left it showing On while the device shut
   down. Both directions now go through one `_markPowerPending`, keyed by
   address. A wake is only believed if `_sendWake` says the packet actually left.
+- **The settings-page description lists all three prerequisites**, not two: the
+  two ticks AND an address. It went stale the moment the address joined the gate
+  in the same branch — a user with everything ticked and no address would
+  otherwise have no stated cause for the missing tile.
 - **AN ADDRESS IS PART OF QUALIFYING** (Simon's call, 2026-09-29). `_homePowerOn`
   requires a non-empty `eversolo_ip` as well as the three ticks, through the one
   `_deviceAddress` helper the device list also uses — while the two gates
@@ -560,7 +570,7 @@ from the repo root:
   opted in, waking by the stored MAC, and holding `waking`/`stopping` until the
   device agrees.
 
-- `perl tools/t_page.pl` — renders the REAL `Power.pm` page (30 assertions)
+- `perl tools/t_page.pl` — renders the REAL `Power.pm` page (31 assertions)
   against the REAL `strings.txt`: every `%%TOKEN%%` filled, every label the
   script reads present on `<body>`, labels escaped out of their attribute, the
   body sent as UTF-8 octets with a status code set, and the two command names the

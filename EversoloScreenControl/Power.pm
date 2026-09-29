@@ -381,6 +381,15 @@ body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg);
         disarm(d.id);
         pressed++;
 
+        // AND DROP THE POLL THAT IS ALREADY ARMED.  The era stamp above only
+        // discards an answer to a poll issued BEFORE this press; a timer that
+        // fires just after it starts a NEW status request, which carries the
+        // current era and so is accepted - and it can still reach the server
+        // ahead of the `set` below, answering with the pre-press state and
+        // putting the optimistic row back.  The only poll that should follow a
+        // press is the one its own callback schedules, once the server knows.
+        clearTimeout(timer);
+
         // Say so at once; the server's own answer replaces this on the next poll.
         d.state = to === 'on' ? 'waking' : 'stopping';
         render();

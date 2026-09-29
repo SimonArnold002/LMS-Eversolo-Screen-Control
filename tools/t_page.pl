@@ -147,6 +147,13 @@ print "\n-- a press is not undone by an answer already in flight --\n";
     ok(!!($html =~ /var\s+era\s*=\s*pressed/),      'and stamps each status request with the count');
     ok(!!($html =~ /era\s*!==\s*pressed/),           'and discards an answer from before a press');
     ok(!!($html =~ /pressed\+\+/),                   'a press bumps the count');
+
+    # The era stamp only discards an answer to a poll issued BEFORE the press.
+    # A timer already armed can fire just after it, and THAT poll carries the
+    # current era - so it is accepted, and it can still reach the server ahead
+    # of the set, answering with the pre-press state and undoing the row.
+    ok(!!($html =~ /pressed\+\+;[\s\S]{0,600}?clearTimeout\(timer\);/),
+        'and drops the poll already armed, which the era stamp cannot catch');
     ok(!!($html =~ /if\s*\(busy\)\s*\{\s*schedule\(1000\);/),
         'a tick that lands mid-flight comes back rather than dropping the loop');
 }

@@ -749,6 +749,26 @@ sub _powerDevices {
     return sort { lc $a->{name} cmp lc $b->{name} || $a->{ip} cmp $b->{ip} } values %byIP;
 }
 
+# A player LMS has just attached gets the defaults, because there was no client
+# to hold them when this module loaded.  Cheap and idempotent: Base::init only
+# writes a pref that is missing or undef, and writes it straight into the hash,
+# so nothing here fires a setChange callback.
+sub _onClientNew {
+    my $request = shift;
+
+    _initClientPrefs( $request->client );
+
+    return;
+}
+
+sub _initClientPrefs {
+    my $client = shift or return;
+
+    $prefs->client($client)->init( \%CLIENT_DEFAULTS );
+
+    return;
+}
+
 # A `client forget` CLEARS THIS PLUGIN'S IN-MEMORY STATE FOR THAT PLAYER, AND
 # NOTHING ELSE.  It deliberately does NOT touch home_power or any other pref.
 #
@@ -774,26 +794,6 @@ sub _powerDevices {
 # THE ID, NOT ->client: the notification is delivered AFTER forgetClient has
 # removed the player, and Request::client is a getClient() lookup - always
 # undef here.  A forget LMS REFUSES (a connected player) notifies nothing.
-# A player LMS has just attached gets the defaults, because there was no client
-# to hold them when this module loaded.  Cheap and idempotent: Base::init only
-# writes a pref that is missing or undef, and writes it straight into the hash,
-# so nothing here fires a setChange callback.
-sub _onClientNew {
-    my $request = shift;
-
-    _initClientPrefs( $request->client );
-
-    return;
-}
-
-sub _initClientPrefs {
-    my $client = shift or return;
-
-    $prefs->client($client)->init( \%CLIENT_DEFAULTS );
-
-    return;
-}
-
 sub _onForget {
     my $request = shift;
 
