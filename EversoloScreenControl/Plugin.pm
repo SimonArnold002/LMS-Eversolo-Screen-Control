@@ -978,7 +978,16 @@ sub _powerSetCommand {
 
     if ( $to eq 'on' ) {
         if ( !_sendWake( $d->{mac}, $d->{ip}, $d->{name}, 'power page pressed' ) ) {
-            $log->warn("Eversolo [$d->{name}]: cannot wake the device - its hardware address is not known yet");
+            # Two ways in, needing different advice.  The page disables the
+            # button unless canwake is 1 (a stored MAC), so from there only a
+            # send failure is reachable and _sendWake has already said which
+            # target refused.  A direct `eversolopower set` can arrive with no
+            # MAC at all - which is what this line used to claim in both cases.
+            $log->warn( $d->{mac}
+                ? "Eversolo [$d->{name}]: the wake packet could not be sent - see the warning above"
+                : "Eversolo [$d->{name}]: cannot wake the device - its hardware address is not known yet. "
+                . "Open Player Settings > Eversolo Screen Control once while the device is ON, and it will be learned."
+            );
             $request->setStatusBadParams();
             return;
         }

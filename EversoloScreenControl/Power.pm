@@ -68,6 +68,18 @@ sub _handler {
     $response->header( 'Cache-Control' => 'no-cache, no-store, must-revalidate' );
     $response->header( Pragma          => 'no-cache' );
 
+    # A RAW HANDLER OWNS ITS FRAMING TOO, not just its status code.  LMS keeps
+    # the connection alive and adds no Content-Length of its own, so without
+    # this the browser has no idea where the body ends: the page renders and the
+    # script runs, but the request never completes and the spinner stays until
+    # LMS closes the socket 75s later - inside Material's Home-tile dialog too,
+    # which is the way in.  Measured live on 2.3.0: 9,978 bytes served, no
+    # Content-Length, curl timing out; a templated LMS page on the same server
+    # sends one, and so does LMS's own raw handler (Web/JSONRPC.pm:349).
+    #
+    # AFTER the encode above: it is the OCTET count that has to go out.
+    $response->content_length( length $body );
+
     Slim::Web::HTTP::addHTTPResponse( $httpClient, $response, \$body );
 
     return;

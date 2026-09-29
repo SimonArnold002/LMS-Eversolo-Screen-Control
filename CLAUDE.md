@@ -218,6 +218,18 @@ the only button that ever sent the wake packet. The page needs no player.
   Material only ever adds tiles — and a tap on it then shows the "none" message.
 - **Off from the page** also drops the pending screen-off of every connected
   player whose `eversolo_ip` is that device, as a player's own power-off does.
+- **A RAW HANDLER OWNS ITS FRAMING, not just its status code.** LMS keeps the
+  connection alive and adds no `Content-Length` of its own, so without
+  `$response->content_length(length $body)` the browser never learns where the
+  body ends: the page renders and the script runs, but the request never
+  completes and the spinner stays until LMS closes the socket 75s later —
+  inside Material's Home-tile dialog too, which is the way in. Measured live on
+  the installed 2.3.0: 9,978 bytes served with no `Content-Length` and curl
+  timing out, while a templated page on the same server sends one and so does
+  LMS's own raw handler (`Web/JSONRPC.pm:349`). Set it AFTER the encode — it is
+  the octet count that goes out. **`LMS-HQPlayer-Bridge`'s `/hqplive` has the
+  same defect** (53,691 bytes, same timeout) — not fixed here, that is its own
+  repo's call.
 - **THE GRACE WINDOW COVERS BOTH SURFACES.** `%powerPending` used to be stamped
   only by the page's own button, so a wake from the PLAYER's power button left
   the page showing the device Off with a live "switch on" button for the whole
@@ -548,7 +560,7 @@ from the repo root:
   opted in, waking by the stored MAC, and holding `waking`/`stopping` until the
   device agrees.
 
-- `perl tools/t_page.pl` — renders the REAL `Power.pm` page (28 assertions)
+- `perl tools/t_page.pl` — renders the REAL `Power.pm` page (30 assertions)
   against the REAL `strings.txt`: every `%%TOKEN%%` filled, every label the
   script reads present on `<body>`, labels escaped out of their attribute, the
   body sent as UTF-8 octets with a status code set, and the two command names the

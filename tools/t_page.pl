@@ -44,6 +44,16 @@ sub ok {
     return $cond ? 1 : 0;
 }
 
+# The other four suites have this; this one did not, so an `is` here died at
+# runtime and took the whole run with it - exit 255, no summary line, and no
+# FAIL to grep for.  `eq` yields 1 or '', never a list, so no context trap.
+sub is {
+    my ($got, $want, $what) = @_;
+    $got  = defined $got  ? $got  : '(undef)';
+    $want = defined $want ? $want : '(undef)';
+    ok($got eq $want, $what . ($got eq $want ? '' : "  [got '$got', want '$want']"));
+}
+
 our (@RAW, %SENT);
 
 # The real strings, read the way LMS reads them (UTF-8, tab-separated), so a
@@ -77,6 +87,7 @@ our %STR;
     sub new { bless { headers => {} }, shift }
     sub code         { $_[0]->{code} = $_[1] }
     sub content_type { $_[0]->{type} = $_[1] }
+    sub content_length { $_[0]->{length} = $_[1] }
     sub header       { $_[0]->{headers}{ $_[1] } = $_[2] }
 }
 
@@ -160,7 +171,14 @@ print "\n-- the response --\n";
     ok($r && $r->{type} eq 'text/html; charset=utf-8', 'served as UTF-8 HTML');
     ok(defined $SENT{body} && !utf8::is_utf8($SENT{body}), 'the body is octets, not characters');
     ok(defined $SENT{body} && index($SENT{body}, "\xE2\x80\xA6") >= 0, 'the ellipsis goes out as UTF-8');
-    ok($r && ($r->{headers}{'Cache-Control'} || '') =~ /no-store/, 'and is never cached');
+    ok(!!($r && ($r->{headers}{'Cache-Control'} || '') =~ /no-store/), 'and is never cached');
+
+    # Without this the browser never learns where the body ends: LMS keeps the
+    # connection alive and adds no length of its own, so the request hangs until
+    # the socket is closed 75s later, spinner and all.
+    ok($r && defined $r->{length}, 'the body is framed - a Content-Length is set');
+    is($r && $r->{length}, defined $SENT{body} ? length($SENT{body}) : -1,
+        'and it is the OCTET count actually sent, counted after the encode');
 }
 
 print "\n$pass passed, $fail failed\n";
