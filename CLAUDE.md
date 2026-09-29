@@ -2,6 +2,71 @@
 
 Guidance for Claude Code when working in this repository.
 
+## REVIEW LEDGER
+
+### DISPROVEN — beliefs the code suggested and a measurement killed
+
+Re-raise one only by disproving the evidence it cites.
+
+| belief | what the measurement showed |
+|---|---|
+| `$prefs->setPlayerDefault(...)` sets a per-player default | **There is no such method in LMS.** `Slim::Utils::Prefs::Base::AUTOLOAD` (Base.pm:319 in 9.0) installs an accessor for any unknown name, so the call became `set('setPlayerDefault', <the pref NAME>)`: one junk namespace pref holding the last name passed, and **no default applied to any player**. Measured live 2026-09-28 — `plugin.eversoloscreencontrol:setPlayerDefault` was `"home_power"`. Shipped this way through 2.3.0. Fixed: `%CLIENT_DEFAULTS` + `client($client)->init`, applied to attached players at init and to each `client new`; `initPlugin` removes the junk pref. Grepped the fleet: no other repo CALLS it (HQPlayer Bridge and Platin Bridge only had dead test stubs) |
+| the suites would have caught that | `t_plugin.pl` **defined a fake `setPlayerDefault`** on its prefs stub, and `t_settings.pl` a no-op one, so 174 assertions passed against a defaults block that did nothing. Both removed, and `t_plugin.pl` now asserts the method does NOT exist. The original `Plugin.pm` no longer loads against the corrected harness |
+| `client new` cannot resolve its client | It can. `Client::new` puts the client in `%clientHash` (Client.pm:310) **before** notifying (:315), and `notifyFromArray` carries the object — so `$request->client` is live there. (Unlike `client forget`, where `->client` really is always undef) |
+| `forgetTimer` runs a pending timer's callback | It does NOT. `Client::forgetClient` calls `Timers::forgetTimer`, which fires `$timer->cb->(EV_KILL)` — and the wrapper in `Timers.pm::_makeTimer` **returns on EV_KILL before calling `$subptr`**. So `_turnScreenOff` never ran on a forget and never cleared `%offPending{$id}`: reconcile then skipped that id for ever (`next if $offPending{$id}` in the not-playing branch), and the discarded client object was retained. `_onForget` now clears `%offPending`, `%screenState`, `%lastElapsed`, `%playbackRevision` and the `$id/...` keys of `%warnedPlaceholder`, before the `home_power` check, for every forgotten player |
+| a `=~` assertion in these suites can fail | **It could not.** A regex match in LIST context yields the EMPTY LIST on failure, so `ok($html =~ /re/, 'label')` reached `ok` as `('label')` — a truthy `$cond` and an undef label — and a FAILED assertion printed `PASS` with a blank name. All 17 such call sites (t_page.pl only) now force boolean context with `!!`, and `ok` counts a missing label as a FAILURE rather than dying. Found 2026-09-29 by anti-testing; every `ok($x =~ ...)` written before that date passed vacuously |
+| `$prefs->allClients` order is stable | It is `keys %{...}` (Namespace.pm:244), randomised per process. `_powerDevices` fills each field from the first player that has one, so it now sorts on `clientid` first — otherwise two players on one device handed the page a different port, name or MAC per restart. `t_plugin.pl`'s stub deliberately yields them in REVERSE order so anything order-dependent fails there |
+
+### Settled
+
+- **The power page's optimistic row must survive an answer already in flight.** A
+  status answer computed before a press lands after it, and applying it put the row
+  back to `off` and re-enabled the button — the press looked inert and a re-tap sent
+  the command twice. The script stamps each poll with a press counter (`era` /
+  `pressed`) and discards a stale answer; it is the NEXT poll that replaces the
+  optimistic state. A tick arriving while a poll is in flight now reschedules
+  instead of dropping out of the loop.
+- **`Power.pm` keeps no copy of its path.** `init` used to store `$PATH` and nothing
+  ever read it. The page posts to `/jsonrpc.js`, never back to itself; holding the
+  path would be the first thread of the coupling the module header forbids.
+- **The power page keeps the keyboard.** `render()` empties and rebuilds the card
+  list on every 2–5s poll and again on the arming tap, which threw away the focused
+  button — so the two-tap power-off could not be completed from the keyboard at all.
+  Each button now carries `data-id`, and `render` notes the focused id and puts focus
+  back, matching on the id rather than through a selector an address would have to
+  survive being quoted into.
+- **A Wake-on-LAN packet that never left is not a wake.** `_sendWake` discarded the
+  `setsockopt` and `send` returns and returned 1 regardless, so a failed send armed
+  the 120s `WAKE_GRACE` over a device that was never signalled — and nothing answers
+  a magic packet, so it was invisible. It now counts successful sends across the four
+  targets, warns per failure, and returns 0 when none got out. Still no rig where
+  `send` is known to fail; this closes the reporting hole, not an observed outage.
+- **`Plugin.pm` declares `Slim::Utils::Strings` itself.** It calls
+  `Slim::Utils::Strings::string` once (the Home tile's title). The server always has
+  that module loaded, so this was never a live failure — but the file states the rule
+  at its own head, and the suites had no `%INC` entry for it.
+
+### Round 2026-09-28 (of 6495b74, `origin/dev..HEAD` = 2.3.0)
+
+5 findings, all 5 verified against LMS 9.0 source + the live rig and all 5 FIXED,
+UNCOMMITTED, not built, not installed. Suites 174 → **193** assertions, all green.
+
+### Round 2026-09-29 (of the same tree plus round 1's fixes)
+
+3 findings, all verified against the local LMS 9.0 tree and all 3 FIXED: the
+`%offPending` leak on `client forget`, the power page losing keyboard focus on every
+poll, and `_sendWake` reporting success for a packet that never left. Suites 193 →
+**200**.
+
+A fourth thing fell out of anti-testing and is fixed too: **every `=~` assertion in
+`t_page.pl` was incapable of failing** (the list-context row above), which means both
+rounds' source-level assertions had been passing vacuously. All of them were
+re-anti-tested afterwards and every one does now catch its bug — round 1's five
+press-counter assertions included. Anti-testing is not optional in this repo: two
+rounds of green were partly meaningless without it.
+
+Still UNCOMMITTED, not built, not installed.
+
 ## Project
 
 **EversoloScreenControl** is a per-player plugin for **Lyrion Music Server (LMS)**
@@ -452,7 +517,7 @@ from the repo root:
   does nothing — the assertions check that the unguarded path WOULD have acted.
   `ESC_PLUGIN` points it at a mutated copy.
 
-  Since 2026-09-28 it also drives the power page's server half (59 assertions
+  Since 2026-09-28 it also drives the power page's server half (76 assertions
   in all; the forget path through the real `setChange` carrier, with a stub
   request whose `->client` is undef as LMS's is): the Home tile registered once and only on opt-in, withdrawn and
   restored in place; the device list built from DISCONNECTED players' prefs and
@@ -463,12 +528,14 @@ from the repo root:
   opted in, waking by the stored MAC, and holding `waking`/`stopping` until the
   device agrees.
 
-- `perl tools/t_page.pl` — renders the REAL `Power.pm` page (19 assertions)
+- `perl tools/t_page.pl` — renders the REAL `Power.pm` page (28 assertions)
   against the REAL `strings.txt`: every `%%TOKEN%%` filled, every label the
   script reads present on `<body>`, labels escaped out of their attribute, the
   body sent as UTF-8 octets with a status code set, and the two command names the
   page calls matching the ones `Plugin.pm` registers. `ESC_POWER` points it at a
   mutated copy.
+  It also pins the press counter that keeps an in-flight status answer from
+  undoing a press (see the Review Ledger).
 
 ## Versioning (Semantic Versioning)
 

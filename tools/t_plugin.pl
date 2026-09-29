@@ -38,19 +38,30 @@ our (%PREFS, %DEFAULTS, %ONCHANGE, @CLIENTS, @TIMERS, @HTTP_GET, @STATE_CALLBACK
 
 {
     package Stub::ClientPrefs;
-    sub new { bless { ns => $_[1], id => $_[2] }, $_[0] }
+    sub new { bless { ns => $_[1], clientid => $_[2] }, $_[0] }
     sub get {
         my ($self, $key) = @_;
-        return $main::PREFS{$self->{ns}}{$self->{id}}{$key}
-            if exists $main::PREFS{$self->{ns}}{$self->{id}}{$key};
+        return $main::PREFS{$self->{ns}}{$self->{clientid}}{$key}
+            if exists $main::PREFS{$self->{ns}}{$self->{clientid}}{$key};
         return $main::DEFAULTS{$self->{ns}}{$key};
+    }
+    # As LMS's Base::init: writes a pref only when it is missing or undef, and
+    # writes it STRAIGHT into the hash - no validation, and no change callback.
+    sub init {
+        my ($self, $hash) = @_;
+        my $store = $main::PREFS{$self->{ns}}{$self->{clientid}} ||= {};
+        for my $key (keys %$hash) {
+            next if defined $store->{$key};
+            $store->{$key} = $hash->{$key};
+        }
+        return;
     }
     # As LMS's Base::set: store, then run the namespace's change callbacks for
     # that pref, handing over the LIVE client or undef when it is not connected.
     sub set {
         my ($self, $key, $value) = @_;
-        $main::PREFS{$self->{ns}}{$self->{id}}{$key} = $value;
-        my $client = Slim::Player::Client::getClient($self->{id});
+        $main::PREFS{$self->{ns}}{$self->{clientid}}{$key} = $value;
+        my $client = Slim::Player::Client::getClient($self->{clientid});
         $_->($key, $value, $client) for @{ $main::ONCHANGE{$self->{ns}}{$key} || [] };
         return ($value, 1);
     }
@@ -58,7 +69,13 @@ our (%PREFS, %DEFAULTS, %ONCHANGE, @CLIENTS, @TIMERS, @HTTP_GET, @STATE_CALLBACK
     package Stub::PrefsRoot;
     sub new { bless { ns => $_[1] }, $_[0] }
     sub client { Stub::ClientPrefs->new($_[0]->{ns}, $_[1]->id) }
-    sub setPlayerDefault { $main::DEFAULTS{$_[0]->{ns}}{$_[1]} = $_[2] }
+    # DELIBERATELY NO setPlayerDefault.  There is no such method in LMS: Base's
+    # AUTOLOAD would turn the call into a pref accessor and store a namespace
+    # pref of that name.  This stub used to provide one, and that is exactly why
+    # the suite passed while no player ever got a default.  Plugin.pm now uses
+    # client->init, and this stub must never grow the fake method back.
+    sub exists { exists $main::PREFS{$_[0]->{ns}}{$_[1]} ? 1 : 0 }
+    sub remove { delete $main::PREFS{$_[0]->{ns}}{$_} for @_[1 .. $#_]; return }
     sub setChange {
         my ($self, $cb, @names) = @_;
         push @{ $main::ONCHANGE{$self->{ns}}{$_} }, $cb for @names;
@@ -68,7 +85,8 @@ our (%PREFS, %DEFAULTS, %ONCHANGE, @CLIENTS, @TIMERS, @HTTP_GET, @STATE_CALLBACK
     # default of 0 reads back as 0, not undef).
     sub allClients {
         my $ns = $_[0]->{ns};
-        return map { Stub::ClientPrefs->new($ns, $_) } sort keys %{ $main::PREFS{$ns} || {} };
+        return map { Stub::ClientPrefs->new($ns, $_) }
+               reverse sort keys %{ $main::PREFS{$ns} || {} };
     }
 
     # LMS's own constructor for a player that may no longer exist: takes a
@@ -223,7 +241,7 @@ our (%PREFS, %DEFAULTS, %ONCHANGE, @CLIENTS, @TIMERS, @HTTP_GET, @STATE_CALLBACK
 $INC{$_} = 1 for qw(
     Slim/Plugin/Base.pm Slim/Utils/Log.pm Slim/Utils/Prefs.pm
     Slim/Utils/Timers.pm Slim/Networking/SimpleAsyncHTTP.pm
-    Slim/Player/Client.pm Slim/Player/Source.pm
+    Slim/Player/Client.pm Slim/Player/Source.pm Slim/Utils/Strings.pm
     Plugins/EversoloScreenControl/Discovery.pm
 );
 
@@ -498,6 +516,115 @@ print "\n-- a wake needs a MAC --\n";
     $PREFS{'plugin.eversoloscreencontrol'}{x} = { %$OPTED, eversolo_ip => '192.168.1.70' };
     my $q = Stub::Query->new(id => '192.168.1.70', to => 'on')->execute($P->can('_powerSetCommand'));
     is($q->{status}, 102, 'the REAL _sendWake refuses a device with no MAC, and the press is refused');
+}
+
+print "\n-- per-player defaults actually reach the player --\n";
+{
+    my $ns = 'plugin.eversoloscreencontrol';
+    %PREFS = (); %DEFAULTS = (); %ONCHANGE = (); @CLIENTS = ();
+
+    # The method that never existed.  If this ever answers again, the defaults
+    # block has gone back to a call LMS AUTOLOADs into a pref of its own name.
+    ok( !Stub::PrefsRoot->can('setPlayerDefault'),
+        'there is no setPlayerDefault to call, in the stub or in LMS' );
+
+    $P->can('_initClientPrefs')->( Stub::Client->new('fresh') );
+
+    is($PREFS{$ns}{fresh}{eversolo_port},    9529, 'a fresh player gets the default port');
+    is($PREFS{$ns}{fresh}{screen_off_delay}, 30,   'and the default screen-off delay');
+    is($PREFS{$ns}{fresh}{power_control},    0,    'power control off by default');
+    is($PREFS{$ns}{fresh}{home_power},       0,    'and it is not on the power page');
+
+    # The settings page reads the delay with no fallback of its own, so the
+    # default has to BE there, not merely implied by a reader.
+    is( Stub::PrefsRoot->new($ns)->client( Stub::Client->new('fresh') )
+            ->get('screen_off_delay'),
+        30, 'and the settings page reads it back' );
+
+    # A configured player must come through untouched, including a deliberate 0.
+    $PREFS{$ns}{set} = { eversolo_port => 4321, screen_off_delay => 0 };
+    $P->can('_initClientPrefs')->( Stub::Client->new('set') );
+    is($PREFS{$ns}{set}{eversolo_port},    4321, 'an existing setting is not overwritten');
+    is($PREFS{$ns}{set}{screen_off_delay}, 0,    'and a deliberate 0 delay survives');
+
+    # Base::init writes straight into the hash, so nothing here may look like a
+    # user changing a pref - that would offer the Home tile on its own.
+    my $fired = 0;
+    $ONCHANGE{$ns}{home_power} = [ sub { $fired++ } ];
+    $P->can('_initClientPrefs')->( Stub::Client->new('quiet') );
+    is($fired, 0, 'initialising defaults fires no pref-change callback');
+
+    # And the players that arrive after the module loaded.
+    $P->can('_onClientNew')->( Stub::Request->new( Stub::Client->new('arrived') ) );
+    is($PREFS{$ns}{arrived}{eversolo_port}, 9529, 'a player that arrives later is initialised too');
+
+    $P->can('_onClientNew')->( Stub::ForgetRequest->new('nobody') );
+    ok(!exists $PREFS{$ns}{nobody}, 'a notification carrying no client writes nothing');
+}
+
+print "\n-- one device reads the same way on every restart --\n";
+{
+    my $ns = 'plugin.eversoloscreencontrol';
+    %PREFS = (); %ONCHANGE = (); @CLIENTS = ();
+
+    # Two players pointing at ONE Eversolo and disagreeing about the port.  A
+    # device has one control port, so one of them is simply wrong - but the page
+    # must not pick a different one per restart, which is what it did while the
+    # answer came from whatever order allClients happened to yield.
+    $PREFS{$ns}{'aa:player'} = { %$OPTED, eversolo_ip => '192.168.1.197',
+        eversolo_port => 9529, eversolo_name => 'DMP-A8' };
+    $PREFS{$ns}{'zz:player'} = { %$OPTED, eversolo_ip => '192.168.1.197',
+        eversolo_port => 7777, eversolo_name => 'ZZ misconfigured' };
+
+    my @d = $P->can('_powerDevices')->();
+    is(scalar @d,      1,        'two players on one address still list one device');
+    is($d[0]->{port},  9529,     'the port comes from the lowest client id, not the hash order');
+    is($d[0]->{name}, 'DMP-A8',  'and so does the name');
+}
+
+print "\n-- a forgotten player leaves no state behind --\n";
+{
+    %PREFS = (); %ONCHANGE = (); @TIMERS = (); @HTTP_GET = ();
+
+    my $client = Stub::Client->new('comes-back', mode => 'stop');
+    @CLIENTS = ($client);
+    set_plugin_prefs($client, enabled => 1, eversolo_ip => '192.168.1.197',
+        eversolo_port => 9529, screen_off_delay => 30);
+
+    my $offtimer = $P->can('_turnScreenOff');
+
+    # An off-timer IS pending, so reconcile must leave this player alone.  The
+    # control assertion: without it the one below could pass for the wrong
+    # reason, against a reconcile that schedules on every pass.
+    $P->can('_onPauseOrStop')->($client);
+    @TIMERS = ();
+    $P->can('_reconcile')->();
+    is( scalar( grep { $_->{cb} == $offtimer } @TIMERS ), 0,
+        'reconcile leaves a player whose off-timer is already pending alone' );
+
+    # Now LMS forgets the player and one of the same id comes back.  LMS's
+    # forgetTimer killed the timer with EV_KILL, which returns BEFORE the
+    # callback - so _turnScreenOff never ran and never cleared the flag.
+    $P->can('_onForget')->( Stub::ForgetRequest->new('comes-back') );
+
+    @TIMERS = ();
+    $P->can('_reconcile')->();
+    is( scalar( grep { $_->{cb} == $offtimer } @TIMERS ), 1,
+        'after a forget that id is reconciled again, not skipped for ever' );
+}
+
+print "\n-- a wake that never left is not a wake --\n";
+{
+    # No packet can be addressed, so nothing leaves the host.  This is the case
+    # that used to return 1 and arm the 120s grace window over a device that was
+    # never signalled - and nothing answers a magic packet, so it was invisible.
+    no warnings 'redefine';
+    local *Socket::inet_aton = sub { undef };
+
+    my $r = $P->can('_sendWake')->(
+        '80:0a:80:5e:2b:7b', '192.168.1.197', 'DMP-A8', 'test' );
+
+    is($r, 0, '_sendWake reports failure when no packet could be sent');
 }
 
 print "\n$pass passed, $fail failed\n";

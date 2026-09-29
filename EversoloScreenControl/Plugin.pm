@@ -17,6 +17,7 @@ use base qw(Slim::Plugin::Base);
 
 use Slim::Utils::Log;
 use Slim::Utils::Prefs;
+use Slim::Utils::Strings ();
 use Slim::Utils::Timers;
 use Slim::Networking::SimpleAsyncHTTP;
 
@@ -58,32 +59,52 @@ my $log = Slim::Utils::Log->addLogCategory({
 my $prefs = preferences('plugin.eversoloscreencontrol');
 my $serverPrefs = preferences('server');
 
-# Per-player defaults (applied the first time a player is seen)
-$prefs->setPlayerDefault('enabled',          0);
+# ---------------------------------------------------------------------------
+#  Per-player defaults.
+#
+#  NOT $prefs->setPlayerDefault: there is no such method in LMS.  Prefs::Base's
+#  AUTOLOAD turns an unknown call into a pref accessor, so that spelling stored
+#  a namespace pref literally called "setPlayerDefault" (the value being the
+#  LAST pref NAME passed) and applied no default to any player at all.  Measured
+#  on the live server, and it is in the release too, which is why initPlugin
+#  removes the junk pref.
+#
+#  A client pref can only be initialised against a client, so these are applied
+#  per player: to the players already attached, and to each one that arrives
+#  (LMS's own Client::new sends `client new`).
+#
+#  Every reader keeps its own fallback as well, and must: allClients hands back
+#  the stored prefs of players that are NOT attached, and those never pass
+#  through here.
+# ---------------------------------------------------------------------------
+my %CLIENT_DEFAULTS = (
 
-# The address of the Eversolo this player drives.  This is the ONLY thing that
-# says which device a player talks to.  The settings page fills it in from the
-# network scan, or the user types it in; either way what is stored is an
-# address, and nothing else has to be consulted to use it.
-$prefs->setPlayerDefault('eversolo_ip',      '');
+    enabled          => 0,
 
-# Drive the Eversolo's power from the LMS player's power button.  OFF by
-# default and deliberately so: a mis-fire costs a full cold boot, so this is
-# something you turn on for the one player that feeds the device.
-$prefs->setPlayerDefault('power_control',    0);
+    # The address of the Eversolo this player drives.  This is the ONLY thing
+    # that says which device a player talks to.  The settings page fills it in
+    # from the network scan, or the user types it in; either way what is stored
+    # is an address, and nothing else has to be consulted to use it.
+    eversolo_ip      => '',
 
-# The device's wired MAC, learned from getModel by the settings page.  Powering
-# ON cannot be an HTTP call - the device is off and nothing is listening - so
-# the only way up is a Wake-on-LAN packet addressed to this.
-$prefs->setPlayerDefault('eversolo_mac',     '');
-$prefs->setPlayerDefault('eversolo_port',    9529);
-$prefs->setPlayerDefault('screen_off_delay', 30);
+    # Drive the Eversolo's power from the LMS player's power button.  OFF by
+    # default and deliberately so: a mis-fire costs a full cold boot, so this is
+    # something you turn on for the one player that feeds the device.
+    power_control    => 0,
 
-# Put this player's Eversolo on the power page, and the page on Material's Home
-# screen.  OFF by default: the tile appears only once a user asks for it, and it
-# only does anything for a player that also has power_control on.  See the
-# "Power page" section below for why a page exists at all.
-$prefs->setPlayerDefault('home_power',       0);
+    # The device's wired MAC, learned from getModel by the settings page.
+    # Powering ON cannot be an HTTP call - the device is off and nothing is
+    # listening - so the only way up is a Wake-on-LAN packet addressed to this.
+    eversolo_mac     => '',
+    eversolo_port    => 9529,
+    screen_off_delay => 30,
+
+    # Put this player's Eversolo on the power page, and the page on Material's
+    # Home screen.  OFF by default: the tile appears only once a user asks for
+    # it, and it only does anything for a player that also has power_control on.
+    # See the "Power page" section below for why a page exists at all.
+    home_power       => 0,
+);
 
 # ---------------------------------------------------------------------------
 #  Power page state.  NOT per player, and deliberately so: the page exists for
@@ -196,6 +217,13 @@ sub initPlugin {
     # The player's power button, for players that opted into power control.
     Slim::Control::Request::subscribe( \&_powerCallback, [['power']] );
 
+    # Per-player defaults, for the players already attached and for every one
+    # that arrives later.  The remove clears the junk namespace pref the old
+    # setPlayerDefault spelling wrote on every start - see %CLIENT_DEFAULTS.
+    $prefs->remove('setPlayerDefault') if $prefs->exists('setPlayerDefault');
+    _initClientPrefs($_) for Slim::Player::Client::clients();
+    Slim::Control::Request::subscribe( \&_onClientNew, [['client'], ['new']] );
+
     # A player REMOVED from LMS takes its power page entry with it - see _onForget.
     Slim::Control::Request::subscribe( \&_onForget, [['client'], ['forget']] );
 
@@ -242,6 +270,7 @@ sub shutdownPlugin {
     Slim::Control::Request::unsubscribe(\&_playbackCallback);
     Slim::Control::Request::unsubscribe(\&_powerCallback);
     Slim::Control::Request::unsubscribe(\&_onForget);
+    Slim::Control::Request::unsubscribe(\&_onClientNew);
 }
 
 # After every plugin's initPlugin, so Material's registry exists to be called.
@@ -567,7 +596,10 @@ sub _sendWake {
         return 0;
     }
 
-    setsockopt( $sock, Socket::SOL_SOCKET(), Socket::SO_BROADCAST(), 1 );
+    if ( !setsockopt( $sock, Socket::SOL_SOCKET(), Socket::SO_BROADCAST(), 1 ) ) {
+        # Not fatal on its own - say so, and let the sends below be the verdict.
+        $log->warn("Eversolo [$name]: could not set SO_BROADCAST - $!");
+    }
 
     my @targets = ('255.255.255.255');
 
@@ -577,15 +609,34 @@ sub _sendWake {
         unshift @targets, "$1.255";
     }
 
+    # COUNT WHAT ACTUALLY LEFT.  Nothing answers a magic packet, so a send that
+    # failed is invisible - and returning 1 for it told the caller to believe a
+    # press for the whole 120s WAKE_GRACE while the device was never signalled.
+    # Any one of the four getting out is a wake; none of them is a failure.
+    my $sent = 0;
+
     for my $target (@targets) {
         my $addr = Socket::inet_aton($target) or next;
 
         for my $port ( 9, 7 ) {
-            send( $sock, $packet, 0, Socket::pack_sockaddr_in( $port, $addr ) );
+            if ( defined send( $sock, $packet, 0,
+                               Socket::pack_sockaddr_in( $port, $addr ) ) ) {
+                $sent++;
+            }
+            else {
+                $log->warn(
+                    "Eversolo [$name]: Wake-on-LAN to $target:$port failed - $!");
+            }
         }
     }
 
     close $sock;
+
+    if ( !$sent ) {
+        $log->warn(
+            "Eversolo [$name]: $why - NO Wake-on-LAN packet could be sent to $mac");
+        return 0;
+    }
 
     $log->info("Eversolo [$name]: $why — sent Wake-on-LAN to $mac");
 
@@ -638,7 +689,13 @@ sub _homePowerOn {
 sub _powerDevices {
     my %byIP;
 
-    for my $cp ( $prefs->allClients ) {
+    # BY CLIENT ID, not in allClients order: allClients walks the KEYS of the
+    # prefs hash, and Perl randomises that per process.  Every field below is
+    # filled by the first player that has one, so without a fixed order two
+    # players on one device would hand the page a different port - or a
+    # different name, or a different MAC - on different restarts.
+    for my $cp ( sort { ($a->{'clientid'} || '') cmp ($b->{'clientid'} || '') }
+                 $prefs->allClients ) {
         next unless _homePowerOn($cp);
 
         my $ip = $cp->get('eversolo_ip');
@@ -680,10 +737,50 @@ sub _powerDevices {
 # THE ID, NOT ->client: the notification is delivered AFTER forgetClient has
 # removed the player, and Request::client is a getClient() lookup - always
 # undef here.  A forget LMS REFUSES (a connected player) notifies nothing.
+# A player LMS has just attached gets the defaults, because there was no client
+# to hold them when this module loaded.  Cheap and idempotent: Base::init only
+# writes a pref that is missing or undef, and writes it straight into the hash,
+# so nothing here fires a setChange callback.
+sub _onClientNew {
+    my $request = shift;
+
+    _initClientPrefs( $request->client );
+
+    return;
+}
+
+sub _initClientPrefs {
+    my $client = shift or return;
+
+    $prefs->client($client)->init( \%CLIENT_DEFAULTS );
+
+    return;
+}
+
 sub _onForget {
     my $request = shift;
 
     my $id = $request->clientid or return;
+
+    # THE IN-MEMORY STATE GOES FIRST, and for every forgotten player, whatever
+    # its settings were.  Nothing else will ever clear it: `forgetClient` calls
+    # `Timers::forgetTimer`, which kills the watcher with EV_KILL - and the
+    # wrapper in Timers.pm returns on EV_KILL BEFORE calling the sub, so
+    # `_turnScreenOff` never runs and the `delete $offPending{$id}` inside it
+    # never happens.
+    #
+    # %offPending is the one that bites.  Reconcile skips a not-playing player
+    # whose off-timer it believes is pending, so a player of this id that comes
+    # back would never have its screen turned off again - the exact hole the
+    # reconcile pass exists to close.  It also retains the discarded client.
+    delete $offPending{$id};
+    delete $screenState{$id};
+    delete $lastElapsed{$id};
+    delete $playbackRevision{$id};
+
+    # Keyed by id plus a suffix, so match on the id rather than one spelling.
+    delete $warnedPlaceholder{$_}
+        for grep { /^\Q$id\E\// } keys %warnedPlaceholder;
 
     return unless Slim::Utils::Prefs::Client->hasPrefs( $prefs, $id );
 

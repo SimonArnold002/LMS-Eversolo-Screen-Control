@@ -38,13 +38,12 @@ use Slim::Utils::Strings ();
 use Slim::Web::Pages;
 use Slim::Web::HTTP;
 
-my $PATH = '';
-
 sub init {
     my ( $class, $path ) = @_;
 
-    $PATH = $path;
-
+    # The path is not kept.  Nothing in this module needs to know it: the page
+    # posts to /jsonrpc.js, never back to itself, and holding it here would be
+    # the first thread of the coupling the header above forbids.
     Slim::Web::Pages->addRawFunction( qr{^\Q$path\E}, \&_handler );
 
     return;
@@ -238,6 +237,7 @@ body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg);
     var armed   = {};   // id -> timer: an ON device's first tap arms, the second switches it off
     var busy    = false;
     var timer   = null;
+    var pressed = 0;    // bumped by every press; see poll()
 
     function rpc(cmd, cb) {
         var x = new XMLHttpRequest();
@@ -267,11 +267,21 @@ body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg);
     // Every poll asks every listed device over HTTP, so it stops while the page
     // is not being looked at and resumes the moment it is.
     function poll() {
-        if (busy) { return; }
+        if (busy) { schedule(1000); return; }
         if (document.hidden) { schedule(5000); return; }
         busy = true;
+
+        // A press while this is in flight must win.  The answer on its way back
+        // was computed BEFORE the press reached the server, so it still says
+        // 'off' (or 'on'), and applying it would wipe the optimistic row and
+        // re-enable the button - the press would look like it did nothing, and
+        // a re-tap would send the command twice.  It is the NEXT poll that
+        // replaces the optimistic state, once the server knows about the press.
+        var era = pressed;
+
         rpc(['eversolopower', 'status'], function (r) {
             busy = false;
+            if (era !== pressed) { schedule(1000); return; }
             if (!r) {
                 err.hidden = false;
                 schedule(5000);
@@ -296,6 +306,15 @@ body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg);
     }
 
     function render() {
+        // KEEP THE KEYBOARD.  Every poll rebuilds the list, which throws away
+        // the focused button - so without this the two-tap power-off could not
+        // be completed from the keyboard at all: the arming tap re-renders, and
+        // a poll 2s later re-renders again.  Note the id, restore it after.
+        var a = document.activeElement;
+        var focusId = ( a && list.contains(a) && a.hasAttribute('data-id') )
+            ? a.getAttribute('data-id') : null;
+        var refocus = null;
+
         none.hidden = devices.length > 0;
         list.textContent = '';
 
@@ -320,12 +339,19 @@ body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg);
             b.disabled  = !(on || (off && canwake));
             b.title     = on ? (isArmed ? D.confirm : D.turnoff) : (off && canwake ? D.turnon : '');
             b.setAttribute('aria-label', d.name + ': ' + (b.title || D[d.state] || d.state));
+            b.setAttribute('data-id', d.id);
             b.onclick   = function () { press(d); };
+
+            // Matched on the id rather than through a selector, so an address
+            // never has to survive being quoted into one.
+            if (focusId !== null && d.id === focusId && !b.disabled) { refocus = b; }
 
             card.appendChild(info);
             card.appendChild(b);
             list.appendChild(card);
         });
+
+        if (refocus) { refocus.focus(); }
     }
 
     // Off -> on is one tap.  On -> off takes two, because a stray power-off
@@ -341,6 +367,7 @@ body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg);
 
         var to = d.state === 'on' ? 'off' : 'on';
         disarm(d.id);
+        pressed++;
 
         // Say so at once; the server's own answer replaces this on the next poll.
         d.state = to === 'on' ? 'waking' : 'stopping';

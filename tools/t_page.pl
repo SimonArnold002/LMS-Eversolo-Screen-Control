@@ -27,6 +27,19 @@ my $STRINGS = File::Spec->catfile($ROOT, 'EversoloScreenControl', 'strings.txt')
 my ($pass, $fail) = (0, 0);
 sub ok {
     my ($cond, $what) = @_;
+
+    # A regex match in LIST CONTEXT yields the EMPTY LIST when it fails, not 0.
+    # So ok(!!($html =~ /re/), 'label') arrives here as ('label'): a truthy $cond
+    # and no label, and a FAILED assertion reported PASS with a blank name.
+    # Every call site below forces boolean context with !!; this catches any
+    # that does not.  It counts a failure rather than dying - a die here would
+    # take every later assertion with it.
+    if ( !defined $what ) {
+        $fail++;
+        print "  FAIL  (no label: a list-context match swallowed it - use !!)\n";
+        return 0;
+    }
+
     $cond ? ($pass++, print "  PASS  $what\n") : ($fail++, print "  FAIL  $what\n");
     return $cond ? 1 : 0;
 }
@@ -81,8 +94,8 @@ print "\n-- the page --\n";
 my $html = $P->can('_page')->();
 ok($html !~ /%%\w+%%/,   'every %%TOKEN%% is filled');
 ok($html !~ /MISSING:/,  'every label the page names exists in strings.txt');
-ok($html =~ m{<title>Eversolo Power</title>}, 'the title is the localised page name');
-ok($html =~ /data-waking="Switching on\x{2026}"/, 'labels reach the script as data attributes');
+ok(!!($html =~ m{<title>Eversolo Power</title>}), 'the title is the localised page name');
+ok(!!($html =~ /data-waking="Switching on\x{2026}"/), 'labels reach the script as data attributes');
 
 # Every D.<key> the script reads must be a data-<key> on <body>.
 my %data = map { $_ => 1 } $html =~ /\bdata-(\w+)=/g;
@@ -98,17 +111,44 @@ print "\n-- escaping --\n";
 {
     local $STR{PLUGIN_EVERSOLO_PP_ON} = 'On" onmouseover="x<y>&';
     my $h = $P->can('_page')->();
-    ok($h =~ /data-on="On&quot; onmouseover=&quot;x&lt;y&gt;&amp;"/, 'a label cannot break out of its attribute');
+    ok(!!($h =~ /data-on="On&quot; onmouseover=&quot;x&lt;y&gt;&amp;"/), 'a label cannot break out of its attribute');
 }
 
 print "\n-- the commands exist --\n";
 {
     my $plugin = do { open my $fh, '<', $PLUGIN or die $!; local $/; <$fh> };
     for my $cmd (qw(status set)) {
-        ok($html =~ /'eversolopower', '$cmd'/, "the page calls eversolopower $cmd");
-        ok($plugin =~ /\[ 'eversolopower', '$cmd' \]/, "and Plugin.pm registers it");
+        ok(!!($html =~ /'eversolopower', '$cmd'/), "the page calls eversolopower $cmd");
+        ok(!!($plugin =~ /\[ 'eversolopower', '$cmd' \]/), "and Plugin.pm registers it");
     }
-    ok($plugin =~ /POWER_PAGE_PATH\s*=>\s*'\/eversolopower'/, 'Plugin.pm hands over the same path');
+    ok(!!($plugin =~ /POWER_PAGE_PATH\s*=>\s*'\/eversolopower'/), 'Plugin.pm hands over the same path');
+}
+
+print "\n-- a press is not undone by an answer already in flight --\n";
+{
+    # The page shows 'waking'/'stopping' the instant it is pressed, and the poll
+    # runs every 5s with each probe allowed 2s, so a status answer computed
+    # BEFORE the press regularly lands after it.  Applying that answer put the
+    # row back to 'off' and re-enabled the button: the press looked as though it
+    # had done nothing, and a re-tap sent the command twice.  The script stamps
+    # each poll and drops an answer from before the last press.
+    ok(!!($html =~ /var\s+pressed\s*=\s*0/),        'the script counts presses');
+    ok(!!($html =~ /var\s+era\s*=\s*pressed/),      'and stamps each status request with the count');
+    ok(!!($html =~ /era\s*!==\s*pressed/),           'and discards an answer from before a press');
+    ok(!!($html =~ /pressed\+\+/),                   'a press bumps the count');
+    ok(!!($html =~ /if\s*\(busy\)\s*\{\s*schedule\(1000\);/),
+        'a tick that lands mid-flight comes back rather than dropping the loop');
+}
+
+print "\n-- the keyboard survives a poll --\n";
+{
+    # render() empties and rebuilds the card list every 2-5s and again on the
+    # arming tap, which throws the focused button away - so the two-tap
+    # power-off could not be completed from the keyboard at all.
+    ok(!!($html =~ /document\.activeElement/),      'render notes which button had focus');
+    ok(!!($html =~ /list\.contains\(a\)/),           'only when the focus is inside the list');
+    ok(!!($html =~ /setAttribute\('data-id', d\.id\)/), 'each button carries its device id');
+    ok(!!($html =~ /refocus\.focus\(\)/),            'and focus is put back after the rebuild');
 }
 
 print "\n-- the response --\n";

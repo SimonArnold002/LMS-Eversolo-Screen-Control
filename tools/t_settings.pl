@@ -59,7 +59,8 @@ our $CPREFS = Stub::Prefs->new;
     sub preferences { bless {}, 'Slim::Utils::Prefs::Obj' }
     package Slim::Utils::Prefs::Obj;
     sub client           { return $main::CPREFS }
-    sub setPlayerDefault { }
+    # No setPlayerDefault stub: LMS has no such method (Base's AUTOLOAD would
+    # turn the call into a pref accessor), and nothing calls it any more.
     sub get              { }
 }
 {
