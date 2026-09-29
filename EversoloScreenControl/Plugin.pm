@@ -32,7 +32,7 @@ use Slim::Player::Source;
 
 use Plugins::EversoloScreenControl::Discovery;
 
-use constant PLUGIN_VERSION => '2.3.0';
+use constant PLUGIN_VERSION => '2.3.1';
 
 # There is no network scan and there must not be one. A /24 sweep took the
 # server off the network (it ARP-floods the box), and the SSDP search that
@@ -390,8 +390,7 @@ sub _askDevice {
         return unless $cprefs->get('enabled');
         return unless ($playbackRevision{$id} || 0) == $requestRevision;
 
-        my $current_ip = $cprefs->get('eversolo_ip') || '';
-        $current_ip =~ s/^\s+|\s+$//g;
+        my $current_ip   = _deviceAddress($cprefs);
         my $current_port = $cprefs->get('eversolo_port') || 9529;
         return unless $current_ip eq $ip && $current_port == $port;
         return unless ( Slim::Player::Source::playmode($client) || 'stop' ) eq 'play';
@@ -447,9 +446,11 @@ sub _askDevice {
 sub _resolveIP {
     my $client = shift or return '';
 
-    my $ip = $prefs->client($client)->get('eversolo_ip');
-    $ip = '' unless defined $ip;
-    $ip =~ s/^\s+|\s+$//g;
+    # Through _deviceAddress, so there is ONE definition of how an address is
+    # read and trimmed.  This file had three copies of those three lines, and
+    # two gates drifting apart on exactly that question is what put a Home tile
+    # on a player with no address.
+    my $ip = _deviceAddress( $prefs->client($client) );
 
     _warnNoAddress($client) if $ip eq '';
 
@@ -537,10 +538,9 @@ sub _setDevicePower {
 
         $log->info("Eversolo [$name]: player powered off — powering the device down");
 
-        # Any pending screen-off is moot: the device is going away entirely.
-        Slim::Utils::Timers::killTimers($client, \&_turnScreenOff);
-        delete $offPending{ $client->id() };
-        delete $screenState{ $client->id() };
+        # Every player on this device, not just the one whose button was
+        # pressed - see _deviceWentOff.
+        _deviceWentOff($ip);
 
         Plugins::EversoloScreenControl::Discovery::setPowerOption(
             $ip, $cprefs->get('eversolo_port') || 9529, 'poweroff' );
@@ -722,29 +722,48 @@ sub _powerDevices {
     # filled by the first player that has one, so without a fixed order two
     # players on one device would hand the page a different port - or a
     # different name, or a different MAC - on different restarts.
+    # WHAT A DEVICE IS, and WHAT WE KNOW ABOUT IT, are two different questions.
+    #
+    # Whether a device appears on the page is the opt-in: a player with all
+    # three ticks and an address.  But its MAC and its name are facts about the
+    # DEVICE, and any player naming that address may be the one holding them -
+    # `PlayerSettings::_lookup` is the only writer, it writes per player, and
+    # only while the device is answering.  So they are gathered from EVERY
+    # player on the address, opted in or not.
+    #
+    # Merging them only across opted-in players is what this loop used to do,
+    # and it defeated the feature in its own core case: tick the box on a player
+    # while the device is off, with a sibling player holding the MAC, and the
+    # page reported canwake:0, disabled the wake button, and told the user to
+    # open the settings page while the device was ON - which it is not, which is
+    # why they were on the page at all.
+    my %known;
+
     for my $cp ( sort { ($a->{'clientid'} || '') cmp ($b->{'clientid'} || '') }
                  $prefs->allClients ) {
-        # _homePowerOn has already refused a player with no address, so there
-        # is no second address test here - one gate, one definition.
-        next unless _homePowerOn($cp);
 
         my $ip = _deviceAddress($cp);
+        next if $ip eq '';
 
-        my $d = $byIP{$ip} ||= {
+        my $k = $known{$ip} ||= { mac => '', name => '' };
+        $k->{mac}  ||= Plugins::EversoloScreenControl::Discovery::normaliseMac( $cp->get('eversolo_mac') );
+        $k->{name} ||= $cp->get('eversolo_name') || '';
+
+        next unless _homePowerOn($cp);
+
+        # The PORT stays with the opted-in player: it is how we talk to the
+        # device, and it is the setting of the player the user opted in.
+        $byIP{$ip} ||= {
             id   => $ip,
             ip   => $ip,
             port => $cp->get('eversolo_port') || 9529,
-            mac  => '',
-            name => '',
         };
-
-        # Two players on one device: either may be the one that learned the
-        # MAC or the name, so take whichever has it.
-        $d->{mac}  ||= Plugins::EversoloScreenControl::Discovery::normaliseMac( $cp->get('eversolo_mac') );
-        $d->{name} ||= $cp->get('eversolo_name') || '';
     }
 
-    $_->{name} ||= $_->{ip} for values %byIP;
+    for my $ip ( keys %byIP ) {
+        $byIP{$ip}{mac}  = $known{$ip}{mac};
+        $byIP{$ip}{name} = $known{$ip}{name} || $ip;
+    }
 
     return sort { lc $a->{name} cmp lc $b->{name} || $a->{ip} cmp $b->{ip} } values %byIP;
 }
@@ -898,6 +917,37 @@ sub _markPowerPending {
     return;
 }
 
+# A device has gone off, so EVERY player that drives it has a screen that is off
+# too, and any screen-off pending for one of them is moot.
+#
+# BOTH power-off paths call this.  While only the page's did it, powering off
+# from a player's own button cleared that player and no other - so a SECOND
+# player on the same device kept an unknown screen state and a live off-timer,
+# and reconcile then fired a doomed Key.Screen.OFF at a device already down.
+# Two players on one device is the case the page itself de-duplicates for.
+#
+# _deviceAddress, not _resolveIP: this runs over every connected player, and
+# _resolveIP warns about a player with no address - which most of them are.
+sub _deviceWentOff {
+    my $ip = shift;
+
+    return unless defined $ip && $ip ne '';
+
+    for my $client ( Slim::Player::Client::clients() ) {
+        next unless $client;
+        next unless _deviceAddress( $prefs->client($client) ) eq $ip;
+
+        Slim::Utils::Timers::killTimers( $client, \&_turnScreenOff );
+        delete $offPending{ $client->id() };
+
+        # Known off, not deleted: an absent id means UNKNOWN, and reconcile
+        # acts on unknown.
+        $screenState{ $client->id() } = 0;
+    }
+
+    return;
+}
+
 # What the page shows for a device: its own answer, unless a press is still
 # inside its grace window and the answer does not agree with it yet.
 sub _powerState {
@@ -995,20 +1045,7 @@ sub _powerSetCommand {
     else {
         $log->info("Eversolo [$d->{name}]: power page pressed — powering the device down");
 
-        # As a player's own power-off does: a pending screen-off is moot for
-        # every connected player that drives this device.
-        for my $client ( Slim::Player::Client::clients() ) {
-            next unless $client;
-
-            my $cip = $prefs->client($client)->get('eversolo_ip');
-            $cip = '' unless defined $cip;
-            $cip =~ s/^\s+|\s+$//g;
-            next unless $cip eq $d->{ip};
-
-            Slim::Utils::Timers::killTimers( $client, \&_turnScreenOff );
-            delete $offPending{ $client->id() };
-            delete $screenState{ $client->id() };
-        }
+        _deviceWentOff( $d->{ip} );
 
         Plugins::EversoloScreenControl::Discovery::setPowerOption(
             $d->{ip}, $d->{port}, 'poweroff' );

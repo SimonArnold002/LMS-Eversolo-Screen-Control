@@ -121,12 +121,15 @@ sub handler {
         my $ip   = _address( $cprefs->get('eversolo_ip') );
         my $port = $cprefs->get('eversolo_port') || 9529;
 
-        $params->{'prefs'}->{'enabled'}          = _checkbox( $cprefs->get('enabled') );
-        $params->{'prefs'}->{'power_control'}    = _checkbox( $cprefs->get('power_control') );
-        $params->{'prefs'}->{'home_power'}       = _checkbox( $cprefs->get('home_power') );
-        $params->{'prefs'}->{'eversolo_ip'}      = $ip;
-        $params->{'prefs'}->{'eversolo_port'}    = $port;
-        $params->{'prefs'}->{'screen_off_delay'} = $cprefs->get('screen_off_delay');
+        # NOTHING IS WRITTEN INTO $params->{prefs} HERE.  SUPER::handler is the
+        # last statement of this method, and it fills that hash from the pref
+        # store for every name `prefs()` returns - unconditionally, on every
+        # request, not just a save (LMS 9.0 Web/Settings.pm:174-177).  Six
+        # assignments used to sit here and every one was overwritten a moment
+        # later; worse, they were the stated home of a read-side _checkbox
+        # repair that therefore never ran.  The save-side collapse below is the
+        # one doing that work.  deviceName and deviceMAC are NOT pref names, so
+        # they survive and are set further down.
 
         my $name = $cprefs->get('eversolo_name');
         $params->{'deviceName'} = defined $name ? $name : '';
@@ -209,8 +212,10 @@ sub _address {
 }
 
 # A checkbox value as 0 or 1.  LMS hands over an arrayref when a hidden field
-# and a ticked box share a name, and a pref already stored in that state has to
-# read back as a boolean too.
+# and a ticked box share a name, so the value is collapsed ON SAVE, which is
+# what repairs a pref already stored in that state.  There is no read-side
+# repair: SUPER::handler refills $params->{prefs} from the store afterwards,
+# so anything written there on the way past is discarded.
 sub _checkbox {
     my $v = shift;
 

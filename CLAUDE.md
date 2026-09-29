@@ -89,7 +89,7 @@ The plugin is **per-player**, not global. It appears in the **Player Settings**
 menu (alongside DSD Player, etc.) and is enabled/disabled independently for each
 LMS player. Players not attached to an Eversolo simply leave it off and are unaffected.
 
-**Current version: 2.3.0**
+**Current version: 2.3.1**
 
 ## How it works
 
@@ -224,6 +224,100 @@ the only button that ever sent the wake packet. The page needs no player.
   Material only ever adds tiles — and a tap on it then shows the "none" message.
 - **Off from the page** also drops the pending screen-off of every connected
   player whose `eversolo_ip` is that device, as a player's own power-off does.
+### Whole-feature audit, 2026-09-29
+
+Six review rounds had each fixed what the round in front of it reported, and several
+findings were defects an earlier round's fix had introduced. So the feature was read
+end to end instead — every writer and reader of every piece of its state — rather than
+diffed again. Two things came out, and **both were the same thing: a definition that
+existed more than once.**
+
+- **ONE definition of "this player's address."** `_deviceAddress` is now the only place
+  an address is read and trimmed; `_resolveIP` is a thin wrapper that adds the
+  no-address warning. There had been **four** copies of those three lines
+  (`_resolveIP`, `_deviceAddress`, `_askDevice`'s in-flight guard, and an inline trim
+  in `_powerSetCommand`). All four agreed — but two gates drifting apart on exactly
+  this question is what put a Home tile on a player with no address, so the copies
+  were the defect whether or not they had diverged yet.
+- **ONE definition of "the device went off."** `_deviceWentOff($ip)` clears every
+  connected player that drives that address. The page's power-off looped all of them;
+  the PLAYER's own power-off cleared only the player whose button was pressed - so a
+  second player on the same device kept an unknown screen state and a live off-timer,
+  and reconcile then fired a doomed `Key.Screen.OFF` at a device already down. That is
+  the two-players-one-device case the page itself de-duplicates for. Pinned by a suite
+  block and anti-tested.
+
+**Carrier audit of that change** (2026-09-29, Simon's rule): `_powerDevices` has
+exactly two consumers, `_powerStatusQuery` and `_powerSetCommand`, and between them
+they read `id`, `ip`, `port`, `name`, `mac` — all five still set for every device
+returned, `mac` as `''` at worst and `name` never empty (it falls back to the
+address). `_homePowerOn` was NOT changed, so `_syncHomeTile`, the other of its two
+callers, is untouched and the tile gate still matches the list. Presence and PORT
+are decided exactly as before, by the first opted-in player in clientid order; only
+`mac` and `name` widened. The one behaviour widened with them: the MAC may
+now come from a non-opted-in player naming that address.
+
+**DECLINED as a risk, Simon 2026-09-29.** A MAC does not go stale — it is unique to
+the device. What could in principle drift is the stored PAIRING "the device at
+address X has MAC M", and only if the device behind a manually-typed address changes
+identity. That cannot happen quietly: the address is entered by hand and nothing
+connects without it being right, so a device moving address breaks the plugin
+visibly and the user edits the field, which clears the MAC and name. The only silent
+case is swapping the unit and giving the replacement the same static IP. Not worth
+code. Do not re-raise it, and do not propose re-storing the MAC from the status
+probe's `getModel` to "self-heal" it.
+
+**And do not propose keying devices by MAC instead of address.** It is the right
+identity in principle, and it cannot be the key: the MAC is only learned while the
+device is ON, so a device never yet seen powered up has none — which is exactly the
+state the page exists for. The address is the only field guaranteed present (it is
+mandatory and manual). Address = key, port = how to reach it, MAC = an optional
+capability that enables waking.
+
+**A stub must match the real sub, or the suite proves the opposite of the truth.**
+`t_plugin.pl`'s `normaliseMac` was a passthrough; the real one returns `''` for
+anything not exactly 12 hex characters, and that empty string is what makes
+`canwake` 0 and refuses a wake. No assertion in that file could have caught a
+malformed MAC. Now mirrored, with `t_discovery.pl` still testing the real sub against colons, dashes, rubbish and undef. Same
+class as the invented `setPlayerDefault` in the DISPROVEN table.
+
+**Read and found sound** (do not re-derive): `shutdownPlugin` clears all six state
+hashes including `%powerPending` and unsubscribes all four callbacks;
+`Discovery::identify` always calls its callback, so `_powerStatusQuery` can never hang
+a request; the settings template has the hidden-0 partner, the `pref_` prefix and the
+`<label>` wrapper Material needs; `_deviceWentOff` deliberately uses `_deviceAddress`
+rather than `_resolveIP`, because the latter warns and this runs over every player.
+
+**Known residual, not fixed:** a `set` in flight does not set the page's `busy` flag,
+so a poll scheduled 1s later by a stale-dropped answer could in principle read
+pre-press state. It needs the `set` to take over a second, which is a local call that
+returns in milliseconds. One boolean cannot track two concurrent requests and a
+counter is more machinery than the risk warrants.
+
+- **What a device IS, and what we KNOW about it, are separate questions.** Whether
+  a device appears on the page is the opt-in (three ticks plus an address). Its MAC
+  and name are facts about the DEVICE, so they are gathered from every player naming
+  that address, opted in or not — `PlayerSettings::_lookup` is the only writer, it
+  writes per player, and only while the device is answering. Merging them across
+  opted-in players only defeated the feature in its own core case: tick the box on a
+  player while the device is off, with a sibling holding the MAC, and the page
+  reported `canwake:0`, disabled the wake button and advised opening the settings
+  page while the device was ON — which it was not, which is why the user was on the
+  page. The PORT still comes from the opted-in player: that is how we talk to it.
+- **A device powered down is KNOWN OFF, not unknown.** Both power-off paths used
+  to `delete $screenState{$id}`, and an absent id means UNKNOWN, which reconcile
+  acts on — so within 60s it scheduled an off-timer and fired a doomed
+  `Key.Screen.OFF` at a device that had just been powered down, logging a failure
+  that reads like a fault. Bounded to one attempt (`_turnScreenOff` then writes 0),
+  but pointless and contrary to this file's own rule. Both now write 0.
+- **`PlayerSettings::handler` writes nothing into `$params->{prefs}`.**
+  `SUPER::handler` is its last statement and refills that hash from the pref store
+  for every name `prefs()` returns, unconditionally and on every request, not just
+  a save (LMS 9.0 `Web/Settings.pm:174-177`). Six assignments sat there and every
+  one was overwritten — and they were the stated home of a read-side `_checkbox`
+  repair that therefore never ran. The save-side collapse is what repairs a pref
+  stored as an arrayref. `deviceName`/`deviceMAC` are not pref names, so they
+  survive. Reported twice before being logged; logged now.
 - **A RAW HANDLER OWNS ITS FRAMING, not just its status code.** LMS keeps the
   connection alive and adds no `Content-Length` of its own, so without
   `$response->content_length(length $body)` the browser never learns where the
@@ -393,6 +487,8 @@ Two more things the page has to get right:
   `['0','1']`, which is truthy for ever after — a toggle that can never be
   turned off. `_checkbox()` collapses it on save and repairs a pref already in
   that state on read. (Simon's server had exactly this, from 1.5.0.)
+- **The read side writes no prefs** — see the Review Ledger; `SUPER::handler`
+  overwrites them. Only the save side matters.
 - **Save before render.** The chosen address is written to prefs inside
   `handler`, before the picker is drawn, rather than left to `SUPER::handler` at
   the end — otherwise the page redraws the state it had before the save. The
@@ -559,7 +655,7 @@ from the repo root:
   does nothing — the assertions check that the unguarded path WOULD have acted.
   `ESC_PLUGIN` points it at a mutated copy.
 
-  Since 2026-09-28 it also drives the power page's server half (87 assertions
+  Since 2026-09-28 it also drives the power page's server half (100 assertions
   in all; the forget path through the real `setChange` carrier, with a stub
   request whose `->client` is undef as LMS's is): the Home tile registered once and only on opt-in, withdrawn and
   restored in place; the device list built from DISCONNECTED players' prefs and

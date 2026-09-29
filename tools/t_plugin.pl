@@ -221,7 +221,19 @@ our (%PREFS, %DEFAULTS, %ONCHANGE, @CLIENTS, @TIMERS, @HTTP_GET, @STATE_CALLBACK
     package Plugins::EversoloScreenControl::Discovery;
     sub deviceState { push @main::STATE_CALLBACKS, $_[2] }
     sub setPowerOption { push @main::POWER_OFF, [$_[0], $_[1], $_[2]] }
-    sub normaliseMac { $_[0] }
+    # MIRRORS Discovery::normaliseMac, and must.  It was a passthrough, which
+    # is worse than useless here: the real one returns '' for anything that is
+    # not exactly 12 hex characters, and that empty string is what makes
+    # canwake 0 and refuses a wake.  A passthrough let a malformed MAC read as
+    # wakeable, so no assertion in this file could ever catch one.
+    # t_power.pl tests the REAL sub; this only has to agree with it.
+    sub normaliseMac {
+        my $mac = shift;
+        return '' unless defined $mac;
+        $mac = lc $mac;
+        $mac =~ s/[^0-9a-f]//g;
+        return length($mac) == 12 ? $mac : '';
+    }
     # getModel: pending unless $IDENTIFY_INLINE, which answers "up" at once.
     sub identify {
         my ($ip, $port, $cb) = @_;
@@ -601,6 +613,113 @@ print "\n-- the player's own power button gets the same grace window --\n";
     $IDENTIFY[0][1]->(undef);
     is($s->{result}{devices_loop}[0]{state}, 'off',
         'a wake that never left leaves the device reading off, not waking');
+}
+
+print "\n-- powering the device down leaves nothing to reconcile --\n";
+{
+    my $ns = 'plugin.eversoloscreencontrol';
+    %PREFS = (); %ONCHANGE = (); @TIMERS = (); @POWER_OFF = (); @HTTP_GET = ();
+
+    # A FRESH ID: %screenState is a lexical inside Plugin.pm, so no suite can
+    # reset it between blocks - reusing an id would measure the leftovers.
+    my $client = Stub::Client->new('powerdown', mode => 'stop');
+    @CLIENTS = ($client);
+    set_plugin_prefs($client, enabled => 1, power_control => 1,
+        eversolo_ip => '192.168.1.197', eversolo_port => 9529, screen_off_delay => 30);
+
+    my $offtimer = $P->can('_turnScreenOff');
+
+    # CONTROL: a player whose screen state is unknown DOES get reconciled -
+    # that is what makes the assertion below mean something.
+    $P->can('_reconcile')->();
+    is( scalar( grep { $_->{cb} == $offtimer } @TIMERS ), 1,
+        'an unknown screen state is reconciled, as it must be' );
+
+    # Now power the device down from the player's own button.
+    %PREFS = (); @TIMERS = ();
+    set_plugin_prefs($client, enabled => 1, power_control => 1,
+        eversolo_ip => '192.168.1.197', eversolo_port => 9529, screen_off_delay => 30);
+    $P->can('_powerCallback')->( Stub::Request->new($client, 0) );
+    is(scalar @POWER_OFF, 1, 'the device is powered down');
+
+    # The screen is off because the whole DEVICE is.  Recording that as unknown
+    # had reconcile schedule an off-timer within 60s and fire a doomed
+    # Key.Screen.OFF at a device that was already gone.
+    @TIMERS = (); @HTTP_GET = ();
+    $P->can('_reconcile')->();
+    is( scalar( grep { $_->{cb} == $offtimer } @TIMERS ), 0,
+        'and afterwards reconcile schedules no screen-off at a device already off' );
+    is( scalar @HTTP_GET, 0, 'and sends it nothing' );
+}
+
+print "\n-- a device going off clears EVERY player that drives it --\n";
+{
+    my $ns = 'plugin.eversoloscreencontrol';
+    %PREFS = (); %ONCHANGE = (); @TIMERS = (); @POWER_OFF = (); @HTTP_GET = ();
+
+    # Two players, ONE Eversolo - the case the power page de-duplicates for.
+    # Only A has power_control, so only A's button drives the device; B just
+    # has the screen control enabled, which is all reconcile needs.
+    my $a = Stub::Client->new('twoA', mode => 'stop');
+    my $b = Stub::Client->new('twoB', mode => 'stop');
+    @CLIENTS = ($a, $b);
+    set_plugin_prefs($a, enabled => 1, power_control => 1,
+        eversolo_ip => '192.168.1.197', eversolo_port => 9529, screen_off_delay => 30);
+    set_plugin_prefs($b, enabled => 1, power_control => 0,
+        eversolo_ip => '192.168.1.197', eversolo_port => 9529, screen_off_delay => 30);
+
+    my $offtimer = $P->can('_turnScreenOff');
+
+    # B has a screen-off pending when the device is powered down under it.
+    $P->can('_onPauseOrStop')->($b);
+    is( scalar( grep { $_->{cb} == $offtimer } @TIMERS ), 1,
+        'B has a screen-off pending' );
+
+    # A's power button takes the whole device down.
+    $P->can('_powerCallback')->( Stub::Request->new($a, 0) );
+    is(scalar @POWER_OFF, 1, 'the device is powered down from A');
+
+    is( scalar( grep { $_->{cb} == $offtimer } @TIMERS ), 0,
+        "and B's pending screen-off goes with it, not just A's" );
+
+    @TIMERS = (); @HTTP_GET = ();
+    $P->can('_reconcile')->();
+    is( scalar( grep { $_->{cb} == $offtimer } @TIMERS ), 0,
+        'reconcile then schedules nothing for either player' );
+    is( scalar @HTTP_GET, 0, 'and sends the dead device nothing' );
+}
+
+print "\n-- the MAC is a fact about the DEVICE, not about the opted-in player --\n";
+{
+    my $ns = 'plugin.eversoloscreencontrol';
+    %PREFS = (); %ONCHANGE = (); @CLIENTS = ();
+
+    # The case the page exists for, and the one this used to fail: the opted-in
+    # player never learned the MAC (its box was ticked while the device was
+    # off), and a sibling player on the same address holds it.  _lookup is the
+    # only writer and it writes per player, only while the device answers.
+    $PREFS{$ns}{'a-optedin'} = { %$OPTED, eversolo_ip => '192.168.1.197' };
+    # 12 hex, as the field stores it: Discovery::_identify normalises net_mac
+    # before PlayerSettings writes it (t_discovery.pl tests that against the
+    # real sub, with colons, dashes and rubbish).
+    $PREFS{$ns}{'b-knows'}   = { enabled => 1, power_control => 0, home_power => 0,
+                                 eversolo_ip => '192.168.1.197',
+                                 eversolo_mac => '800a805e2b7b',
+                                 eversolo_name => 'DMP-A8 (ManCave)' };
+
+    my @d = $P->can('_powerDevices')->();
+    is(scalar @d, 1, 'one device, listed because a player opted in');
+    is($d[0]->{mac}, '800a805e2b7b',
+        "and it can be woken using the sibling player's MAC");
+    is($d[0]->{name}, 'DMP-A8 (ManCave)', 'and named from it too');
+
+    # The opt-in is still what decides whether the device appears at all.
+    %PREFS = ();
+    $PREFS{$ns}{'b-knows'} = { enabled => 1, power_control => 0, home_power => 0,
+                               eversolo_ip => '192.168.1.197',
+                               eversolo_mac => '800a805e2b7b' };
+    my @none = $P->can('_powerDevices')->();
+    is(scalar @none, 0, 'a player that knows the MAC but has not opted in lists nothing');
 }
 
 print "\n-- no address, no tile --\n";
