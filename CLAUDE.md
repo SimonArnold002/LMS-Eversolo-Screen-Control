@@ -164,6 +164,14 @@ suite-tested, NOT yet verified live. The README section is written at the merge
 to `main` like every other README change, not on a dev build, so the README is
 still correct to omit it until then.
 
+**2026-09-30: DOCUMENTED at the 2.3.2 merge to `main`.** The route exists, so the
+rule above is spent: `README.md` now carries "The power page and its Home screen
+tile", Wake-on-LAN, the wired-only and same-subnet conditions and the MAC-learned-
+while-on caveat, and the player's power-off is no longer described as one-way.
+The zip ships `CHANGELOG.md`, so it was REBUILT AT 2.3.2 with no bump (Simon's
+call): the release entry is the only file that differs from the dev 2.3.2 zip,
+so a rig already on 2.3.2 missing it loses nothing. New sha `197a5a96…`.
+
 Power is opt-in per player (`power_control`, default off) because ticking it
 hands a device's mains state to a player button.
 
@@ -176,7 +184,10 @@ plugin preferences of each one. Every player still decides for itself: a buddy
 with `enabled` or `power_control` off is skipped, and a buddy with its own
 Eversolo powers that device down rather than the pressed player's.
 
-### The power page and its Material Home tile (dev, 2026-09-28, unverified live)
+### The power page and its Material Home tile (2.3.0–2.3.2, released to main 2026-09-30)
+
+Live on the rig: the page served with a `Content-Length` on 2.3.1. A wake or a
+power-off pressed ON THE PAGE is not recorded here as verified live.
 
 **Why it exists:** once an Eversolo is off its LMS player disappears, and with it
 the only button that ever sent the wake packet. The page needs no player.
