@@ -59,7 +59,8 @@ our $CPREFS = Stub::Prefs->new;
     sub preferences { bless {}, 'Slim::Utils::Prefs::Obj' }
     package Slim::Utils::Prefs::Obj;
     sub client           { return $main::CPREFS }
-    sub setPlayerDefault { }
+    # No setPlayerDefault stub: LMS has no such method (Base's AUTOLOAD would
+    # turn the call into a pref accessor), and nothing calls it any more.
     sub get              { }
 }
 {
@@ -265,6 +266,35 @@ print "\n-- SAVING with the box emptied --\n";
     is($CPREFS->get('eversolo_ip'), '', 'the address is cleared');
     is($CPREFS->get('enabled'), 0, 'unticked really is off');
     is(scalar @ASKED, 0, 'and nothing is asked');
+}
+
+print "\n-- the Home screen power button is opt-in, and saves both ways --\n";
+{
+    my $p = run();
+    ok(!$p->{'prefs'}{'home_power'}, 'off until the user ticks it');
+
+    $p = run(
+        prefs  => { eversolo_ip => '192.168.1.197', eversolo_name => 'DMP-A8 (ManCave)',
+                    eversolo_mac => '800a805e2b7b' },
+        params => { saveSettings => 1, pref_eversolo_ip => '192.168.1.197',
+                    pref_enabled => '1', pref_power_control => [ '0', '1' ],
+                    pref_home_power => [ '0', '1' ], pref_eversolo_port => '9529',
+                    pref_screen_off_delay => '30' },
+    );
+    completed($p, 'ticking the Home power button');
+    is($CPREFS->get('home_power'), 1, 'ticked is stored as 1, not the raw array');
+    is($p->{'prefs'}{'home_power'}, 1, 'and the page redraws it ticked');
+
+    $p = run(
+        prefs  => { eversolo_ip => '192.168.1.197', home_power => 1,
+                    eversolo_name => 'DMP-A8 (ManCave)', eversolo_mac => '800a805e2b7b' },
+        params => { saveSettings => 1, pref_eversolo_ip => '192.168.1.197',
+                    pref_enabled => '1', pref_power_control => '1',
+                    pref_home_power => '0', pref_eversolo_port => '9529',
+                    pref_screen_off_delay => '30' },
+    );
+    completed($p, 'unticking it');
+    is($CPREFS->get('home_power'), 0, 'unticked really is off');
 }
 
 print "\n-- odd input --\n";

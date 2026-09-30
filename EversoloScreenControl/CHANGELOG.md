@@ -12,6 +12,54 @@ Version numbering follows [Semantic Versioning](https://semver.org/):
 
 ---
 
+## [2.3.2] — 2026-09-30
+
+Everything since 2.2.1. The Eversolo can now be switched back **on** from LMS.
+Until now power control was one-way: once the device was off, its player left
+LMS and took the power button with it. A small power page, reachable from a tile
+on Material's Home screen, needs no player and works either way.
+
+### New Features
+- **An Eversolo power page, and a tile for it on Material's Home screen.** One
+  card per Eversolo, showing whether it is on, with a single button to switch
+  it on or off.
+  - **Opt-in, per player.** Tick **Power button on Material's Home screen** in
+    the player's Eversolo settings. It also needs **Enable Eversolo Screen
+    Control** and **Control Eversolo power** ticked, and the device's address
+    filled in. Refresh Material after saving and an **Eversolo Power** tile is
+    offered for the Home screen.
+  - **Switching on is Wake-on-LAN**, which the Eversolo only accepts on its
+    **wired** network port, from a server on the same subnet. Over Wi-Fi it
+    will not come back on.
+  - **The device's MAC address is learned while it is on.** Open the player's
+    Eversolo settings once with the device switched on before relying on the
+    page to wake it; the page says so when it cannot wake a device yet.
+  - **Switching off takes two taps** — the first arms the button for four
+    seconds — so a stray tap cannot shut the device down.
+  - **The page and the player's own power button agree.** Press either and the
+    page shows *Switching on…* or *Switching off…* until the device answers,
+    rather than the old state for the length of a boot.
+  - Unticking the box stops the tile being offered. A tile already on your Home
+    screen stays until you unpin it from its own menu; the same is true after
+    uninstalling the plugin, because Material keeps the Home screen in the
+    browser.
+  - The page also works in any browser at `http://<server>:9000/eversolopower`.
+
+### Bug Fixes
+- A new player's settings page now shows the 30-second screen-off delay and
+  port 9529. The per-player defaults were never saved, so both boxes were empty
+  until the first save — the plugin itself always fell back to the same values.
+- Powering an Eversolo off no longer leaves a second player on the same device
+  trying to switch its screen off a minute later, a request that could only fail
+  and logged an error that read like a fault.
+- A Wake-on-LAN packet that failed to send is now logged, rather than treated as
+  sent.
+- A player that LMS forgot while its screen was waiting to switch off — LMS does
+  this by itself five minutes after a player disconnects — no longer stops the
+  once-a-minute check from switching that screen off after it reconnects.
+
+---
+
 ## [2.2.1] — 2026-09-11
 
 Docs only — no plugin code changed.

@@ -59,7 +59,7 @@ sub page {
 sub prefs {
     my ($class, $client) = @_;
     return ($prefs->client($client),
-        qw(enabled power_control eversolo_ip eversolo_port screen_off_delay));
+        qw(enabled power_control home_power eversolo_ip eversolo_port screen_off_delay));
 }
 
 sub handler {
@@ -76,6 +76,7 @@ sub handler {
         # off.  Collapse it, and repair a pref already in that state.
         $params->{'pref_enabled'}       = _checkbox( $params->{'pref_enabled'} );
         $params->{'pref_power_control'} = _checkbox( $params->{'pref_power_control'} );
+        $params->{'pref_home_power'}    = _checkbox( $params->{'pref_home_power'} );
 
         # --- The Eversolo's address ---
         my $was = _address( $cprefs->get('eversolo_ip') );
@@ -100,6 +101,10 @@ sub handler {
         $cprefs->set('enabled',        $params->{'pref_enabled'});
         $cprefs->set('power_control',  $params->{'pref_power_control'});
 
+        # Offers or withdraws the Material Home tile.  Plugin.pm hears this
+        # through a pref change callback - this module still calls nothing in it.
+        $cprefs->set('home_power',     $params->{'pref_home_power'});
+
         # A new address knows nothing about itself yet.  Drop the old name so
         # the page cannot show one device's name beside another's address.
         if ( $now ne $was ) {
@@ -116,11 +121,15 @@ sub handler {
         my $ip   = _address( $cprefs->get('eversolo_ip') );
         my $port = $cprefs->get('eversolo_port') || 9529;
 
-        $params->{'prefs'}->{'enabled'}          = _checkbox( $cprefs->get('enabled') );
-        $params->{'prefs'}->{'power_control'}    = _checkbox( $cprefs->get('power_control') );
-        $params->{'prefs'}->{'eversolo_ip'}      = $ip;
-        $params->{'prefs'}->{'eversolo_port'}    = $port;
-        $params->{'prefs'}->{'screen_off_delay'} = $cprefs->get('screen_off_delay');
+        # NOTHING IS WRITTEN INTO $params->{prefs} HERE.  SUPER::handler is the
+        # last statement of this method, and it fills that hash from the pref
+        # store for every name `prefs()` returns - unconditionally, on every
+        # request, not just a save (LMS 9.0 Web/Settings.pm:174-177).  Six
+        # assignments used to sit here and every one was overwritten a moment
+        # later; worse, they were the stated home of a read-side _checkbox
+        # repair that therefore never ran.  The save-side collapse below is the
+        # one doing that work.  deviceName and deviceMAC are NOT pref names, so
+        # they survive and are set further down.
 
         my $name = $cprefs->get('eversolo_name');
         $params->{'deviceName'} = defined $name ? $name : '';
@@ -203,8 +212,10 @@ sub _address {
 }
 
 # A checkbox value as 0 or 1.  LMS hands over an arrayref when a hidden field
-# and a ticked box share a name, and a pref already stored in that state has to
-# read back as a boolean too.
+# and a ticked box share a name, so the value is collapsed ON SAVE, which is
+# what repairs a pref already stored in that state.  There is no read-side
+# repair: SUPER::handler refills $params->{prefs} from the store afterwards,
+# so anything written there on the way past is discarded.
 sub _checkbox {
     my $v = shift;
 

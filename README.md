@@ -1,6 +1,6 @@
 # Eversolo Screen Control — for Lyrion Music Server
 
-Drives the screen on an **Eversolo DMP-A8 or DMP-A6** from **Lyrion Music Server (LMS)**: the display comes on when music starts, stays awake between tracks, and switches off again a set time after playback stops. Optionally the player's power button shuts the Eversolo down too. It is **per-player**, so only the players you point at an Eversolo are ever touched.
+Drives the screen on an **Eversolo DMP-A8 or DMP-A6** from **Lyrion Music Server (LMS)**: the display comes on when music starts, stays awake between tracks, and switches off again a set time after playback stops. Optionally the player's power button shuts the Eversolo down too, and a power page on Material's Home screen switches it back on. It is **per-player**, so only the players you point at an Eversolo are ever touched.
 
 Tested on LMS 9.x against a live DMP-A8; LMS 8.0 and the DMP-A6 use the same control API.
 
@@ -14,6 +14,7 @@ Tested on LMS 9.x against a live DMP-A8; LMS 8.0 and the DMP-A6 use the same con
 | **No screensaver mid-album** | The ON key is re-sent at every track change, which resets the Eversolo's own screensaver timer so it never cuts in during continuous play | Nothing |
 | **Screen off after a delay** | A configurable wait (default 30 s) after pause or stop, cancelled if you start again | Nothing |
 | **Power off with the player** | The player's power button shuts the Eversolo down — the same shutdown its own app sends | Nothing |
+| **Power on from Material's Home** | A power page, pinned as a tile, wakes the Eversolo even after its player has left LMS | The wired network port |
 | **Per-player** | Lives in Player Settings and is enabled per player — every other player is unaffected | Nothing |
 | **Synced groups** | Power a sync group and each buddy drives its own Eversolo with its own settings | Nothing |
 | **Bridged and virtual players** | HQPlayer Bridge, player groups and UPnP bridges work the same, because the player's own address is never used | Nothing |
@@ -75,6 +76,7 @@ Select a player, then go to **Settings → Player → Eversolo Screen Control**:
 |---|---|---|
 | **Enable Eversolo Screen Control** | Activate screen control for *this* player | Off |
 | **Control Eversolo power** | Also drive the Eversolo's power from the player's power button | Off |
+| **Power button on Material's Home screen** | Put this Eversolo on the power page, and offer the page as a Home screen tile | Off |
 | **Eversolo IP Address** | The address of the Eversolo this player feeds | — |
 | **Eversolo API Port** | HTTP control port | `9529` |
 | **Screen Off Delay (seconds)** | Wait after pause or stop before the screen goes off | `30` |
@@ -91,11 +93,30 @@ What the plugin does with the address is ask the device who it is, so the settin
 
 To find the address, on the DMP-A8 touch screen go to **Settings → About** and read it from the network section. Assign a static IP or a DHCP reservation so it stays put.
 
-### Powering the Eversolo off
+### Powering the Eversolo off and on
 
 Tick **Control Eversolo power** and the player's power button shuts the device down, with an HTTP `setPowerOption?tag=poweroff` — the same shutdown the Eversolo's own app sends.
 
-> This is a **one-way** switch. Once the Eversolo is off it drops off the network and its player disappears from LMS, so there is nothing left in LMS to press. Switch it back on at the device.
+Once the Eversolo is off, its player disappears from LMS and takes that power button with it. Switching it back on is what the **power page** is for.
+
+### The power page and its Home screen tile
+
+Tick **Power button on Material's Home screen** as well, and the Eversolo gets a card on the power page: whether it is on, and one button to switch it on or off. The page needs no player, so it still works once the device is off.
+
+- **Needs all three ticks and an address:** Enable Eversolo Screen Control, Control Eversolo power, Power button on Material's Home screen, and the Eversolo IP Address filled in.
+- **Refresh Material after saving** and an **Eversolo Power** tile is offered for the Home screen. Pin it, and tapping it opens the page in a dialog.
+- **Switching on** sends a Wake-on-LAN magic packet — the same way the Eversolo's own app wakes it, because nothing on the device is listening while it is off.
+- **Switching off** takes two taps: the first arms the button for four seconds, so a stray tap cannot shut the device down.
+- **The page follows the player's own power button too.** Press either and the card shows *Switching on…* or *Switching off…* until the device answers.
+- **Any browser** can open the page directly at `http://<server>:9000/eversolopower`.
+
+Wake-on-LAN has two conditions, both set by Eversolo rather than by this plugin:
+
+> **The wired network port only.** Eversolo document that a magic packet is not accepted over Wi-Fi — powered down over Wi-Fi, the device will not come back until it is switched on by hand. The server must also be on the same subnet as the Eversolo.
+
+> **The MAC address is learned while the device is on.** A magic packet is addressed to the device's MAC, and the Eversolo only reports it while it is running. Open the player's Eversolo settings once with the device switched on; the card says so when it cannot wake a device yet.
+
+Unticking the box stops the tile being offered. A tile already on a Home screen stays until you unpin it from the tile's own menu — Material keeps the Home screen in each browser, where the server cannot reach it. The same applies after uninstalling the plugin.
 
 **Synced players each drive their own Eversolo.** Press power on one player of a sync group and every buddy set to follow it powers its own device too, using its own settings. A buddy with the plugin switched off, or power control unticked, is left alone.
 
@@ -133,6 +154,10 @@ Music resumes before timer fires
 
 Player powered off      (only with "Control Eversolo power")
     → send setPowerOption?tag=poweroff to Eversolo
+
+Player powered on, or "Switch on" on the power page
+    → send a Wake-on-LAN magic packet to the Eversolo's MAC
+      (<subnet>.255 and 255.255.255.255, ports 9 and 7)
 ```
 
 Every HTTP request goes through LMS's `Slim::Networking::SimpleAsyncHTTP`, so none of it blocks playback. The endpoints used:
@@ -140,7 +165,7 @@ Every HTTP request goes through LMS's `Slim::Networking::SimpleAsyncHTTP`, so no
 ```
 http://<IP>:9529/ZidooControlCenter/RemoteControl/sendkey?key=<COMMAND>
 http://<IP>:9529/ZidooMusicControl/v2/setPowerOption?tag=poweroff
-http://<IP>:9529/ZidooControlCenter/getModel          (name and model, for the settings page)
+http://<IP>:9529/ZidooControlCenter/getModel          (name, model and MAC; the power page's "is it on?")
 http://<IP>:9529/ZidooMusicControl/v2/getState        (what the device is really doing)
 ```
 
@@ -177,6 +202,10 @@ The device's own remote-key list, recorded here for reference. It is **not** a l
 **Settings save but nothing changes.** LMS loads plugin code at startup only, so a new version needs a restart. If a copy is also installed from the plugin repository, that copy shadows a manually installed one — remove one of them so only a single copy is present.
 
 **The plugin isn't in Player Settings.** Check the folder is named exactly `EversoloScreenControl` under `Plugins/`, that the plugin is enabled in *Settings → Plugins*, and that LMS has been restarted since the files were copied.
+
+**The Eversolo Power tile isn't offered.** All three boxes must be ticked on the player's Eversolo settings and the IP address filled in. Then refresh Material — it reads the tile list when the page loads.
+
+**Switch on does nothing.** Wake-on-LAN needs the Eversolo on its **wired** port and the server on the same subnet. If the card says the device cannot be switched on from here yet, the MAC address is still unknown: switch the device on by hand and open the player's Eversolo settings once.
 
 **Check the logs.** *LMS → Settings → Advanced → Logging* → set `plugin.eversoloscreencontrol` to DEBUG.
 

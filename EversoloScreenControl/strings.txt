@@ -22,6 +22,48 @@ PLUGIN_EVERSOLO_POWER_DESC
 PLUGIN_EVERSOLO_POWER_NOMAC
 	EN	The device's hardware address is not known yet, so it cannot be woken. Open this page once while the Eversolo is switched ON and it will be learned automatically.
 
+PLUGIN_EVERSOLO_HOME_POWER
+	EN	Power button on Material's Home screen
+
+PLUGIN_EVERSOLO_HOME_POWER_DESC
+	EN	Adds an Eversolo Power tile to Material's Home screen, with a power button for this player's Eversolo that still works once the device is off and its player has gone from LMS. Needs "Enable Eversolo Screen Control" and "Control Eversolo power" ticked too, and the Eversolo's address filled in above - without an address there is nothing for the tile to open, so it is not offered. Refresh Material after saving for the tile to appear. Unticking stops the tile being offered; one already on your Home screen stays until you unpin it.
+
+PLUGIN_EVERSOLO_POWER_PAGE
+	EN	Eversolo Power
+
+PLUGIN_EVERSOLO_PP_HINT
+	EN	Switching on sends a Wake-on-LAN packet, which the Eversolo only accepts on its wired network port.
+
+PLUGIN_EVERSOLO_PP_ON
+	EN	On
+
+PLUGIN_EVERSOLO_PP_OFF
+	EN	Off
+
+PLUGIN_EVERSOLO_PP_WAKING
+	EN	Switching on…
+
+PLUGIN_EVERSOLO_PP_STOPPING
+	EN	Switching off…
+
+PLUGIN_EVERSOLO_PP_TURN_ON
+	EN	Switch on
+
+PLUGIN_EVERSOLO_PP_TURN_OFF
+	EN	Switch off
+
+PLUGIN_EVERSOLO_PP_CONFIRM
+	EN	Tap again to switch off
+
+PLUGIN_EVERSOLO_PP_NOMAC
+	EN	Cannot be switched on from here yet: open this player's Eversolo settings once while the device is on.
+
+PLUGIN_EVERSOLO_PP_NONE
+	EN	No Eversolo has its Home screen power button switched on. Turn it on under Player Settings > Eversolo Screen Control.
+
+PLUGIN_EVERSOLO_PP_ERROR
+	EN	The server did not answer - retrying.
+
 PLUGIN_EVERSOLO_IP
 	EN	Eversolo IP Address
 
